@@ -43,12 +43,12 @@ class {ext_class_name}(omni.ext.IExt):
             self._window = ui.Window("Level Navigator", width=320, height=220)
             with self._window.frame:
                 with ui.VStack(spacing=8):
-                    ui.Label("🎮 Modular Level Navigator", height=24)
+                    ui.Label("Modular Level Navigator", height=24)
                     ui.Label("Klik tombol di bawah untuk berganti level:", height=18)
                     ui.Line(height=2)
                     levels = self.manager.get_registered_levels()
                     for lvl_id, disp_name in levels.items():
-                        btn = ui.Button(f"🚀 {disp_name}", height=34)
+                        btn = ui.Button(f"{disp_name}", height=34)
                         btn.set_clicked_fn(lambda l=lvl_id: self.manager.navigate_to(l))
         except Exception as e:
             print(f"[{ext_class_name}] UI setup failed: {e}")
