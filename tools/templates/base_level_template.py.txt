@@ -166,3 +166,117 @@ class BaseLevelHandler(ABC):
             print(f"[{self.level_id}] Selection cleared -> Resetting orbit pivot to (0, 0, 0)")
             self.reset_camera_pivot(stage)
 
+    # --- Delegated Metadata & Property Inspection ---
+    @staticmethod
+    def _serialize_usd_value(val: Any) -> Any:
+        """Serializes complex OpenUSD/Gf/Sdf/Vt types to JSON-safe primitives."""
+        if val is None:
+            return None
+        if isinstance(val, (int, float, bool, str)):
+            return val
+        if isinstance(val, (list, tuple)):
+            return [BaseLevelHandler._serialize_usd_value(x) for x in val]
+        if isinstance(val, dict):
+            return {str(k): BaseLevelHandler._serialize_usd_value(v) for k, v in val.items()}
+        if hasattr(val, "pathString"):
+            return val.pathString
+        if hasattr(val, "__iter__"):
+            try:
+                return [BaseLevelHandler._serialize_usd_value(x) for x in list(val)]
+            except Exception:
+                pass
+        return str(val)
+
+    def get_prim_metadata(self, stage: Optional[Usd.Stage], prim_path: str) -> Dict[str, Any]:
+        """
+        Extracts comprehensive metadata, material bindings, custom attributes,
+        and geometric dimensions of a target prim in a JSON-serializable format.
+        """
+        if not stage or not prim_path:
+            return {}
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return {"error": f"Prim '{prim_path}' is not valid on stage."}
+
+        # 1. Identity & Prim Info
+        info: Dict[str, Any] = {
+            "name": prim.GetName(),
+            "path": prim.GetPath().pathString,
+            "type": prim.GetTypeName() or "Xform",
+            "is_active": prim.IsActive(),
+            "is_defined": prim.IsDefined(),
+        }
+
+        # 2. Bound Material (UsdShade)
+        try:
+            from pxr import UsdShade
+            binding_api = UsdShade.MaterialBindingAPI(prim)
+            mat, _ = binding_api.ComputeBoundMaterial()
+            if mat:
+                mat_prim = mat.GetPrim()
+                info["material"] = {
+                    "material_name": mat_prim.GetName(),
+                    "material_path": mat_prim.GetPath().pathString,
+                }
+            else:
+                info["material"] = None
+        except Exception as e:
+            info["material"] = f"Error: {e}"
+
+        # 3. Geometric Bounding Box & Dimensions
+        try:
+            from pxr import UsdGeom
+            bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [
+                UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy
+            ])
+            bound = bbox_cache.ComputeWorldBound(prim)
+            rng = bound.ComputeAlignedRange()
+            if not rng.IsEmpty():
+                min_pt = rng.GetMin()
+                max_pt = rng.GetMax()
+                size = max_pt - min_pt
+                info["bounds"] = {
+                    "min": [round(min_pt[0], 2), round(min_pt[1], 2), round(min_pt[2], 2)],
+                    "max": [round(max_pt[0], 2), round(max_pt[1], 2), round(max_pt[2], 2)],
+                    "dimensions": [round(size[0], 2), round(size[1], 2), round(size[2], 2)],
+                }
+        except Exception:
+            pass
+
+        # 4. OpenUSD Prim Metadata (customData, kind, documentation, etc.)
+        try:
+            raw_meta = prim.GetAllMetadata()
+            clean_meta = {}
+            for k, v in raw_meta.items():
+                clean_meta[k] = self._serialize_usd_value(v)
+            info["usd_metadata"] = clean_meta
+        except Exception as e:
+            info["usd_metadata"] = f"Error: {e}"
+
+        # 5. Custom Data Dictionary
+        try:
+            custom_data = prim.GetCustomData()
+            if custom_data:
+                info["custom_data"] = self._serialize_usd_value(custom_data)
+        except Exception:
+            pass
+
+        # 6. Attributes
+        try:
+            attributes = {}
+            for attr in prim.GetAttributes():
+                val = attr.Get()
+                attributes[attr.GetName()] = self._serialize_usd_value(val)
+            info["attributes"] = attributes
+        except Exception:
+            pass
+
+        # 7. Children Prims
+        try:
+            info["children"] = [child.GetName() for child in prim.GetChildren()]
+        except Exception:
+            pass
+
+        return info
+
