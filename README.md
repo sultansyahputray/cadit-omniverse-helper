@@ -31,50 +31,42 @@ CADIT Omniverse Helper adalah toolkit enterprise yang dirancang untuk mengotomas
 
 ---
 
-## 🚀 Panduan Penggunaan di Proyek Omniverse Kit
+## 🚀 Alur Kerja Super Praktis di Proyek Baru
 
-### 1. Integrasi ke Proyek Kit SDK
-Cukup letakkan folder `tools/` dan file batch shortcut (`init_framework.bat`, `add.bat`, `list_levels.bat`) di root folder proyek Omniverse Kit SDK Anda:
+Anda cukup me-clone repo ini langsung ke dalam project Omniverse Kit SDK Anda. Sistem otomatis menangani path, Git ignore, dan shortcut tanpa langkah manual yang rumit!
 
-```text
-my-omniverse-project/
-├── init_framework.bat
-├── add.bat
-├── list_levels.bat
-├── tools/
-│   ├── dev_tools.py
-│   └── templates/
-└── source/
-    └── extensions/
-        └── my_company.my_extension/
-```
-
-### 2. Inisialisasi Arsitektur Core
-Jalankan inisialisasi framework untuk ekstensi target Anda:
+### Langkah 1: Clone ke dalam Proyek
+Buka terminal di root project Omniverse Kit Anda, lalu clone:
 
 ```bash
-.\init_framework.bat my_company.my_extension
+cd my-omniverse-project
+git clone https://github.com/sultansyahputray/cadit-omniverse-helper.git
 ```
 
-*Jika nama ekstensi tidak ditentukan, sistem otomatis mendeteksi ekstensi pertama di dalam `source/extensions`.*
-
-> **🛡️ Proteksi Idempotensi (Anti-Overwrite):**
-> Jika ekstensi sudah terinisialisasi sebelumnya, script akan menolak menimpa file Anda dan menjaga kode Anda tetap aman. Gunakan flag `--force` jika benar-benar ingin mereset total.
-
-### 3. Menambah Level Baru
-Setiap developer dapat membuat level baru secara instan dan mandiri tanpa konflik merge Git:
+### Langkah 2: Jalankan Inisialisasi
+Jalankan script inisialisasi dari dalam folder helper:
 
 ```bash
+.\cadit-omniverse-helper\init_framework.bat
+```
+
+> **✨ Apa yang otomatis terjadi saat `init` dijalankan?**
+> 1. **Auto-Inject `.gitignore`:** Sistem otomatis menambahkan `cadit-omniverse-helper/` ke file `.gitignore` proyek utama Anda. Sehingga **TIDAK AKAN ADA masalah nested Git repository**!
+> 2. **Auto-Export Root Shortcuts:** Sistem otomatis membuat shortcut `add.bat` dan `list_levels.bat` langsung di root proyek utama Anda.
+> 3. **Auto-Scaffold Core Architecture:** Modul `core/`, `core/helpers/`, dan Starter Level 1 (`levels/level_01_default.py`) terpasang di ekstensi target.
+> 4. **Proteksi Idempotensi:** Mencegah kode yang sudah dikerjakan ter-overwrite secara tidak sengaja.
+
+---
+
+### Langkah 3: Tambah Level & Kerja Mandiri
+Setelah `init`, developer dapat langsung menjalankan perintah dari root proyek utama:
+
+```bash
+# Tambah level baru:
 .\add.bat level_02_room
 .\add.bat level_03_chiller
-```
 
-File baru akan otomatis terbuat di `source/extensions/<ext>/.../levels/level_*.py`.
-
-### 4. Melihat Daftar Level Aktif
-Inspeksi seluruh level yang terdaftar di dalam ekstensi:
-
-```bash
+# Cek daftar level yang terdaftar:
 .\list_levels.bat
 ```
 

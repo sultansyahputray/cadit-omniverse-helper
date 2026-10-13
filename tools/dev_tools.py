@@ -15,8 +15,30 @@ from pathlib import Path
 
 
 def get_workspace_root() -> Path:
-    """Returns the workspace root directory (parent of tools/)."""
-    return Path(__file__).resolve().parent.parent
+    """
+    Returns the workspace root directory containing source/extensions.
+    Supports running directly at root, or from inside a subfolder like cadit-omniverse-helper/.
+    """
+    tools_dir = Path(__file__).resolve().parent
+    helper_dir = tools_dir.parent  # e.g. .../cadit-omniverse-helper or .../my-project
+
+    # Check 1: Is helper_dir itself the workspace root?
+    if (helper_dir / "source" / "extensions").is_dir():
+        return helper_dir
+
+    # Check 2: Is helper_dir's parent the workspace root? (subfolder scenario)
+    if (helper_dir.parent / "source" / "extensions").is_dir():
+        return helper_dir.parent
+
+    # Check 3: Walk upwards looking for source/extensions or repo.bat
+    curr = helper_dir.parent
+    while curr.parent != curr:
+        if (curr / "source" / "extensions").is_dir() or (curr / "repo.bat").is_file():
+            return curr
+        curr = curr.parent
+
+    # Fallback to helper_dir
+    return helper_dir
 
 
 def get_templates_dir() -> Path:
@@ -26,16 +48,19 @@ def get_templates_dir() -> Path:
 
 def resolve_extension_paths(ext_name: str = None) -> tuple:
     """
-    Resolves (ext_name, ext_root_dir, pkg_dir, pkg_name).
-    Default target is cadit.modular_project.
+    Resolves (ext_name, ext_root_dir, pkg_dir).
+    Default target is cadit.modular_project or first extension discovered.
     """
     ws = get_workspace_root()
     extensions_base = ws / "source" / "extensions"
 
+    if not extensions_base.is_dir():
+        print(f"[ERROR] 'source/extensions' tidak ditemukan di workspace: {ws}")
+        sys.exit(1)
+
     if not ext_name:
         ext_name = "cadit.modular_project"
         if not (extensions_base / ext_name).is_dir():
-            # Scan source/extensions for available extensions
             candidates = [p.name for p in extensions_base.iterdir() if p.is_dir()]
             if candidates:
                 ext_name = candidates[0]
@@ -45,13 +70,10 @@ def resolve_extension_paths(ext_name: str = None) -> tuple:
         print(f"[ERROR] Extension directory not found: {ext_root}")
         sys.exit(1)
 
-    # Convert dot-separated ext name into directory path (e.g. cadit.modular_project -> cadit/modular_project)
     parts = ext_name.split(".")
     pkg_dir = ext_root.joinpath(*parts)
 
-    # Fallback if package folder differs
     if not pkg_dir.is_dir():
-        # Look for any folder with __init__.py inside ext_root
         for p in ext_root.rglob("__init__.py"):
             pkg_dir = p.parent
             break
@@ -75,16 +97,84 @@ def read_template(template_name: str) -> str:
         return f.read()
 
 
+def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
+    """
+    If running from a subfolder (e.g. cadit-omniverse-helper/),
+    automatically injects to root .gitignore and exports root shortcuts.
+    """
+    if ws == helper_dir:
+        return
+
+    subfolder_name = helper_dir.name
+    pattern = f"{subfolder_name}/"
+
+    # 1. Inject to root .gitignore
+    gitignore_path = ws / ".gitignore"
+    if gitignore_path.exists():
+        content = gitignore_path.read_text(encoding="utf-8")
+        if subfolder_name not in content:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# CADIT Omniverse Helper Toolkit\n{pattern}\n")
+            print(f"  [+] Injected '{pattern}' into root .gitignore (eliminating nested git)")
+    else:
+        gitignore_path.write_text(f"# CADIT Omniverse Helper Toolkit\n{pattern}\n", encoding="utf-8")
+        print(f"  [+] Created root .gitignore with '{pattern}'")
+
+    # 2. Export universal root shortcuts
+    root_add_bat = ws / "add.bat"
+    root_list_bat = ws / "list_levels.bat"
+
+    add_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "set SCRIPT_DIR=%~dp0\r\n"
+        'if "%~1"=="" (\r\n'
+        "    echo [ERROR] Harap tentukan nama level yang ingin dibuat!\r\n"
+        "    echo Contoh penggunaan:\r\n"
+        "    echo   .\\add.bat level_02_room\r\n"
+        "    echo   .\\add.bat level_2_chiller\r\n"
+        "    exit /b 1\r\n"
+        ")\r\n"
+        f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
+        f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" add %*\r\n'
+        ") else (\r\n"
+        '    python "%SCRIPT_DIR%tools\\dev_tools.py" add %*\r\n'
+        ")\r\n"
+        "endlocal\r\n"
+    )
+    list_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "set SCRIPT_DIR=%~dp0\r\n"
+        f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
+        f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" list %*\r\n'
+        ") else (\r\n"
+        '    python "%SCRIPT_DIR%tools\\dev_tools.py" list %*\r\n'
+        ")\r\n"
+        "endlocal\r\n"
+    )
+    root_add_bat.write_text(add_cmd, encoding="utf-8")
+    root_list_bat.write_text(list_cmd, encoding="utf-8")
+    print(f"  [+] Exported root shortcuts 'add.bat' and 'list_levels.bat' to project root")
+
+
 def cmd_init(args):
     """Initializes extension with Core, Four Helpers, and Starter Level 1."""
+    ws = get_workspace_root()
+    helper_dir = Path(__file__).resolve().parent.parent
+
     ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension)
     manager_path = pkg_dir / "core" / "manager.py"
 
     print("=" * 70)
     print("  CADIT MODULAR PROJECT - FRAMEWORK INITIALIZATION")
     print("=" * 70)
-    print(f"[CHECK] Memeriksa ekstensi target: '{ext_name}'")
-    print(f"[PATH]  Package path: {pkg_dir}")
+    print(f"[WORKSPACE] Root: {ws}")
+    print(f"[TARGET]    Ekstensi target: '{ext_name}'")
+    print(f"[PATH]      Package path: {pkg_dir}")
+
+    # Ensure integration with root project if in subfolder
+    ensure_root_integration(ws, helper_dir)
 
     # Idempotency safety guard
     if manager_path.exists() and not args.force:
@@ -220,7 +310,6 @@ def cmd_add(args):
 
     target_file.write_text(content, encoding="utf-8")
 
-    # Ensure levels/__init__.py exists
     (levels_dir / "__init__.py").touch(exist_ok=True)
 
     print("=" * 70)
@@ -260,7 +349,6 @@ def cmd_list(args):
     for idx, lfile in enumerate(level_files, start=1):
         content = lfile.read_text(encoding="utf-8")
         
-        # Regex extraction of metadata
         id_match = re.search(r'level_id\s*=\s*["\']([^"\']+)["\']', content)
         name_match = re.search(r'display_name\s*=\s*["\']([^"\']+)["\']', content)
         class_match = re.search(r'class\s+([a-zA-Z0-9_]+)\s*\(\s*BaseLevelHandler\s*\):', content)
@@ -280,18 +368,15 @@ def main():
     parser = argparse.ArgumentParser(description="CADIT Modular Project Scaffolding Engine")
     subparsers = parser.add_subparsers(dest="command", help="Perintah yang tersedia")
 
-    # Command: init
     init_parser = subparsers.add_parser("init", help="Inisialisasi core architecture & helpers")
     init_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
     init_parser.add_argument("--force", action="store_true", help="Paksa tulis ulang meskipun sudah ada")
 
-    # Command: add
     add_parser = subparsers.add_parser("add", help="Tambah level baru")
     add_parser.add_argument("name", help="Nama level (contoh: level_02_room atau room)")
     add_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
     add_parser.add_argument("--force", action="store_true", help="Paksa timpa jika file sudah ada")
 
-    # Command: list
     list_parser = subparsers.add_parser("list", help="Tampilkan daftar level yang terdaftar")
     list_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
 
