@@ -26,6 +26,13 @@ class {class_name}(BaseLevelHandler):
     # 🎯 2. Variabel warna lokal level (Direct Color Injection):
     # status_color = "#00E5FF"
 
+    # 🎯 3. Konfigurasi Zoom saat klik objek:
+    # - zoom_on_click = True  -> Auto-fit bounding box objek
+    # - zoom_on_click = False -> Tanpa zoom sama sekali (hanya lock pivot kamera ke objek)
+    # - click_zoom_distance = 500.0 -> Zoom ke jarak tepat 500 unit (jika diisi angka)
+    zoom_on_click = True
+    click_zoom_distance = None
+
     def __init__(self, manager):
         super().__init__(manager)
         self.selected_item = None
@@ -33,9 +40,8 @@ class {class_name}(BaseLevelHandler):
     def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
         print(f"[{self.level_id}] Entered. Previous level: {context.previous_level}")
 
-        # 🎯 Setup kamera: atur poros putar dan sudut pandang
-        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=800.0)
-        self.set_camera_view(stage, "iso")
+        # 🎯 Setup kamera: Default view 'iso' (Isometric) menghadap (0, 0, 0) pada jarak 1000
+        self.set_camera_view(stage, "iso", distance=1000.0)
 
         if stage:
             prim = stage.GetPrimAtPath(self.root_prim_path)
@@ -67,5 +73,10 @@ class {class_name}(BaseLevelHandler):
 
     def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
         self.selected_item = prim_path
+        # 🎯 Pilihan konfigurasi zoom saat klik:
+        # 1. Mengikuti class property (default):
         super().on_selection_changed(stage, prim_path)
-
+        # 2. Tanpa zoom sama sekali (hanya lock pivot):
+        # super().on_selection_changed(stage, prim_path, zoom=False)
+        # 3. Zoom ke jarak tertentu (misal 500 unit):
+        # super().on_selection_changed(stage, prim_path, distance=500.0)

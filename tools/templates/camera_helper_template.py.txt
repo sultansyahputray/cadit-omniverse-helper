@@ -229,25 +229,62 @@ class CameraHelper:
         self,
         stage: Usd.Stage,
         pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
-        distance: float = 1000.0
+        distance: float = 1000.0,
+        view: Optional[str] = None
     ) -> None:
         """
         Sets the camera orbit pivot point and positions the camera at the given distance.
+        Optionally switches to view preset (e.g. 'iso', 'front', 'top') if view is specified.
         """
+        if view and view.lower() in VIEWCUBE_DIRECTIONS:
+            self._current_view_direction = VIEWCUBE_DIRECTIONS[view.lower()]
+
         self._current_pivot = Gf.Vec3d(pivot_point[0], pivot_point[1], pivot_point[2])
         self._current_distance = max(1.0, float(distance))
 
         cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
         self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
 
+    def get_current_camera_pose(self, stage: Usd.Stage) -> Tuple[Gf.Vec3d, float, Gf.Vec3d]:
+        """
+        Returns (camera_world_pos, distance_to_pivot, view_direction) based on active camera prim in USD stage.
+        Falls back to internal tracked state if camera prim cannot be resolved.
+        """
+        cam_prim = self.get_active_camera_prim(stage)
+        if cam_prim and cam_prim.IsValid():
+            try:
+                xformable = UsdGeom.Xformable(cam_prim)
+                world_xform = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                cam_pos = world_xform.ExtractTranslation()
+                vec = cam_pos - self._current_pivot
+                dist = vec.GetLength()
+                if dist > 1.0:
+                    view_dir = vec.GetNormalized()
+                    return cam_pos, dist, view_dir
+            except Exception:
+                pass
+        return (
+            self._current_pivot + (self._current_view_direction * self._current_distance),
+            self._current_distance,
+            self._current_view_direction
+        )
+
     def set_camera_pivot_to_object(
         self,
         stage: Usd.Stage,
         prim_path: str,
-        distance: Optional[float] = None
+        distance: Optional[float] = None,
+        zoom: bool = True
     ) -> bool:
         """
         Moves orbit pivot to the geometric center (midpoint) of the target object's bounding box.
+
+        Args:
+            stage: Active USD stage.
+            prim_path: Path of the target prim.
+            distance: Explicit camera distance. If specified as float (e.g. 500.0), camera zooms to this distance.
+            zoom: If False, preserves the current camera distance without any zoom change.
+                  If True and distance is None, automatically calculates distance based on bounding box.
         """
         if not stage or not prim_path:
             return False
@@ -268,27 +305,49 @@ class CameraHelper:
 
         mid = rng.GetMidpoint()
         size = (rng.GetMax() - rng.GetMin()).GetLength()
-        target_dist = distance if distance is not None else max(100.0, size * 1.5)
-        print(f"[CameraHelper] Locking orbit pivot to object '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (dist={target_dist:.1f})")
+
+        # Query current camera orientation so we preserve viewing angle smoothly
+        _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
+        self._current_view_direction = cur_dir
+
+        if not zoom:
+            # Preserve current camera zoom distance
+            target_dist = cur_dist
+            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (no zoom, preserving dist={target_dist:.1f})")
+        elif distance is not None:
+            # Custom zoom distance specified
+            target_dist = max(10.0, float(distance))
+            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (custom zoom dist={target_dist:.1f})")
+        else:
+            # Auto-fit based on bounding box size
+            target_dist = max(100.0, size * 1.5)
+            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (auto-fit dist={target_dist:.1f})")
+
         self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist)
         return True
 
     def reset_camera_pivot(self, stage: Usd.Stage) -> None:
         """Resets camera pivot back to the global origin (0, 0, 0)."""
-        print("[CameraHelper] Resetting orbit pivot to origin (0.0, 0.0, 0.0)")
-        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=self._current_distance)
+        _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
+        self._current_view_direction = cur_dir
+        print(f"[CameraHelper] Resetting orbit pivot to origin (0.0, 0.0, 0.0) | preserving dist={cur_dist:.1f}")
+        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=cur_dist)
 
-    def set_camera_view(self, stage: Usd.Stage, view_name: str) -> bool:
+    def set_camera_view(self, stage: Usd.Stage, view_name: str = "iso", distance: Optional[float] = None) -> bool:
         """
         Rotates camera to standard dice presets ('iso', 'top', 'front', 'back', 'left', 'right', 'bottom').
-        Preserves current pivot point and distance.
+        Preserves current pivot point, or updates distance if provided.
         """
         key = (view_name or "iso").strip().lower()
         if key not in VIEWCUBE_DIRECTIONS:
             return False
 
+        if distance is not None:
+            self._current_distance = max(1.0, float(distance))
+
         self._current_view_direction = VIEWCUBE_DIRECTIONS[key]
         cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        print(f"[CameraHelper] Set view preset '{key.upper()}': Pivot={self._current_pivot}, Distance={self._current_distance:.1f}")
         self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
         return True
 
