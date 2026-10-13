@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
 """
-Modular Project Template CLI & Scaffolding Engine.
+Omniverse Modular Project Scaffolding Engine.
 Provides commands for:
   - init: Injects Core Architecture, Four Helpers, and Level 1 Starter (with idempotency guard)
   - add: Scaffolds a new level from standard template
@@ -46,28 +46,57 @@ def get_templates_dir() -> Path:
     return Path(__file__).resolve().parent / "templates"
 
 
-def resolve_extension_paths(ext_name: str = None) -> tuple:
+def get_available_extensions(ws: Path) -> list:
+    """Returns list of valid extension directory names inside source/extensions."""
+    ext_base = ws / "source" / "extensions"
+    if not ext_base.is_dir():
+        return []
+    return sorted([
+        p.name for p in ext_base.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    ])
+
+
+def resolve_extension_paths(ext_name: str = None, require_explicit: bool = False) -> tuple:
     """
     Resolves (ext_name, ext_root_dir, pkg_dir).
-    Default target is cadit.modular_project or first extension discovered.
+    Requires explicit extension name or resolves single detected extension.
     """
     ws = get_workspace_root()
     extensions_base = ws / "source" / "extensions"
 
     if not extensions_base.is_dir():
-        print(f"[ERROR] 'source/extensions' tidak ditemukan di workspace: {ws}")
+        print(f"[ERROR] Direktori 'source/extensions' tidak ditemukan di workspace: {ws}")
         sys.exit(1)
 
+    available = get_available_extensions(ws)
+
+    # If extension name is not provided
     if not ext_name:
-        ext_name = "cadit.modular_project"
-        if not (extensions_base / ext_name).is_dir():
-            candidates = [p.name for p in extensions_base.iterdir() if p.is_dir()]
-            if candidates:
-                ext_name = candidates[0]
+        if not available:
+            print(f"[ERROR] Tidak ada folder ekstensi ditemukan di: {extensions_base}")
+            print("Harap buat ekstensi terlebih dahulu (contoh: .\\repo.bat template new)")
+            sys.exit(1)
+
+        if require_explicit or len(available) > 1:
+            print("[ERROR] Harap tentukan nama ekstensi target!")
+            print(f"Daftar ekstensi yang terdeteksi di {extensions_base}:")
+            for idx, name in enumerate(available, 1):
+                print(f"  {idx}. {name}")
+            print("\nContoh penggunaan:")
+            print(f"  .\\init_framework.bat {available[0]}")
+            sys.exit(1)
+        else:
+            ext_name = available[0]
+            print(f"[INFO] Menggunakan ekstensi tunggal yang terdeteksi: '{ext_name}'")
 
     ext_root = extensions_base / ext_name
     if not ext_root.is_dir():
-        print(f"[ERROR] Extension directory not found: {ext_root}")
+        print(f"[ERROR] Ekstensi '{ext_name}' tidak ditemukan di: {extensions_base}")
+        if available:
+            print("Daftar ekstensi yang tersedia di proyek ini:")
+            for idx, name in enumerate(available, 1):
+                print(f"  {idx}. {name}")
         sys.exit(1)
 
     parts = ext_name.split(".")
@@ -82,7 +111,7 @@ def resolve_extension_paths(ext_name: str = None) -> tuple:
 
 
 def to_pascal_case(snake_str: str) -> str:
-    """Converts 'level_02_room' to 'Level02Room'."""
+    """Converts 'my_company.modular_project' to 'MyCompanyModularProject'."""
     clean = re.sub(r"[^a-zA-Z0-9_]", "_", snake_str)
     return "".join(part.capitalize() for part in clean.split("_") if part)
 
@@ -123,7 +152,25 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     # 2. Export universal root shortcuts
     root_add_bat = ws / "add.bat"
     root_list_bat = ws / "list_levels.bat"
+    root_init_bat = ws / "init_framework.bat"
 
+    init_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "set SCRIPT_DIR=%~dp0\r\n"
+        'if "%~1"=="" (\r\n'
+        "    echo [ERROR] Harap tentukan nama ekstensi target yang ingin diinisialisasi!\r\n"
+        "    echo Contoh penggunaan:\r\n"
+        "    echo   .\\init_framework.bat company.my_extension\r\n"
+        "    echo.\r\n"
+        ")\r\n"
+        f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
+        f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" init %*\r\n'
+        ") else (\r\n"
+        '    python "%SCRIPT_DIR%tools\\dev_tools.py" init %*\r\n'
+        ")\r\n"
+        "endlocal\r\n"
+    )
     add_cmd = (
         "@echo off\r\n"
         "setlocal\r\n"
@@ -132,7 +179,7 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         "    echo [ERROR] Harap tentukan nama level yang ingin dibuat!\r\n"
         "    echo Contoh penggunaan:\r\n"
         "    echo   .\\add.bat level_02_room\r\n"
-        "    echo   .\\add.bat level_2_chiller\r\n"
+        "    echo   .\\add.bat level_2_chiller [nama_ekstensi]\r\n"
         "    exit /b 1\r\n"
         ")\r\n"
         f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
@@ -153,9 +200,18 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         ")\r\n"
         "endlocal\r\n"
     )
-    root_add_bat.write_text(add_cmd, encoding="utf-8")
-    root_list_bat.write_text(list_cmd, encoding="utf-8")
-    print(f"  [+] Exported root shortcuts 'add.bat' and 'list_levels.bat' to project root")
+    created_shortcuts = []
+    if not root_init_bat.exists():
+        root_init_bat.write_text(init_cmd, encoding="utf-8")
+        created_shortcuts.append("init_framework.bat")
+    if not root_add_bat.exists():
+        root_add_bat.write_text(add_cmd, encoding="utf-8")
+        created_shortcuts.append("add.bat")
+    if not root_list_bat.exists():
+        root_list_bat.write_text(list_cmd, encoding="utf-8")
+        created_shortcuts.append("list_levels.bat")
+    if created_shortcuts:
+        print(f"  [+] Exported root shortcuts: {', '.join(created_shortcuts)} to project root")
 
 
 def cmd_init(args):
@@ -163,11 +219,12 @@ def cmd_init(args):
     ws = get_workspace_root()
     helper_dir = Path(__file__).resolve().parent.parent
 
-    ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension)
+    # Require explicit extension name if multiple exist or if user omitted
+    ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension, require_explicit=True)
     manager_path = pkg_dir / "core" / "manager.py"
 
     print("=" * 70)
-    print("  CADIT MODULAR PROJECT - FRAMEWORK INITIALIZATION")
+    print("  OMNIVERSE MODULAR FRAMEWORK - INITIALIZATION")
     print("=" * 70)
     print(f"[WORKSPACE] Root: {ws}")
     print(f"[TARGET]    Ekstensi target: '{ext_name}'")
@@ -186,7 +243,7 @@ def cmd_init(args):
         print("Tips Penggunaan:")
         print("  - Untuk menambah level baru, jalankan: .\\add.bat <nama_level>")
         print("  - Untuk melihat daftar level, jalankan: .\\list_levels.bat")
-        print("  - Untuk memaksa reset total (HATI-HATI), gunakan: .\\init_framework.bat --force")
+        print(f"  - Untuk memaksa reset total (HATI-HATI), gunakan: .\\init_framework.bat {ext_name} --force")
         print("-" * 70)
         return 0
 
@@ -283,7 +340,7 @@ def cmd_add(args):
     levels_dir = pkg_dir / "levels"
 
     if not levels_dir.is_dir():
-        print(f"[ERROR] Direktori levels belum ada. Jalankan .\\init_framework.bat terlebih dahulu.")
+        print(f"[ERROR] Direktori levels belum ada di '{ext_name}'. Jalankan .\\init_framework.bat {ext_name} terlebih dahulu.")
         sys.exit(1)
 
     raw_name = args.name.strip().lower()
@@ -313,7 +370,7 @@ def cmd_add(args):
     (levels_dir / "__init__.py").touch(exist_ok=True)
 
     print("=" * 70)
-    print(f"[SUCCESS] Berhasil membuat level baru: '{clean_id}'")
+    print(f"[SUCCESS] Berhasil membuat level baru di ekstensi '{ext_name}':")
     print(f"  - File:       {target_file}")
     print(f"  - Class:      {class_name}")
     print(f"  - Display:    {display_name}")
@@ -335,12 +392,12 @@ def cmd_list(args):
     print("=" * 75)
 
     if not levels_dir.is_dir():
-        print("[INFO] Belum ada direktori levels/. Jalankan .\\init_framework.bat dahulu.")
+        print(f"[INFO] Belum ada direktori levels/ di {ext_name}. Jalankan .\\init_framework.bat {ext_name} dahulu.")
         return 0
 
     level_files = sorted([f for f in levels_dir.glob("level_*.py") if f.is_file()])
     if not level_files:
-        print("[INFO] Belum ada file level di folder levels/.")
+        print(f"[INFO] Belum ada file level di folder levels/ ({ext_name}).")
         return 0
 
     print(f"{'No':<4} | {'Level ID':<22} | {'Class Name':<26} | {'Display Name'}")
@@ -360,25 +417,28 @@ def cmd_list(args):
         print(f"{idx:<4} | {lvl_id:<22} | {cls_name:<26} | {display}")
 
     print("=" * 75)
-    print(f"Total: {len(level_files)} level terdaftar.")
+    print(f"Total: {len(level_files)} level terdaftar di '{ext_name}'.")
     return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CADIT Modular Project Scaffolding Engine")
+    parser = argparse.ArgumentParser(description="Omniverse Modular Extension Scaffolding Engine")
     subparsers = parser.add_subparsers(dest="command", help="Perintah yang tersedia")
 
+    # Command: init
     init_parser = subparsers.add_parser("init", help="Inisialisasi core architecture & helpers")
-    init_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
+    init_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (contoh: company.my_ext)")
     init_parser.add_argument("--force", action="store_true", help="Paksa tulis ulang meskipun sudah ada")
 
+    # Command: add
     add_parser = subparsers.add_parser("add", help="Tambah level baru")
     add_parser.add_argument("name", help="Nama level (contoh: level_02_room atau room)")
-    add_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
+    add_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
     add_parser.add_argument("--force", action="store_true", help="Paksa timpa jika file sudah ada")
 
+    # Command: list
     list_parser = subparsers.add_parser("list", help="Tampilkan daftar level yang terdaftar")
-    list_parser.add_argument("extension", nargs="?", default="cadit.modular_project", help="Nama ekstensi target")
+    list_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
 
     parsed = parser.parse_args()
 
