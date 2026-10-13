@@ -200,6 +200,52 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         ")\r\n"
         "endlocal\r\n"
     )
+    init_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"\n'
+        'if [ -z "$1" ]; then\n'
+        '    echo "[ERROR] Harap tentukan nama ekstensi target yang ingin diinisialisasi!"\n'
+        '    echo\n'
+        '    echo "Contoh penggunaan:"\n'
+        '    echo "  ./init_framework.sh company.my_extension"\n'
+        '    echo\n'
+        'fi\n'
+        f'if [ -f "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" ]; then\n'
+        f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" init "$@"\n'
+        "else\n"
+        '    python "$SCRIPT_DIR/tools/dev_tools.py" init "$@"\n'
+        "fi\n"
+    )
+    add_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"\n'
+        'if [ -z "$1" ]; then\n'
+        '    echo "[ERROR] Harap tentukan nama level yang ingin dibuat!"\n'
+        '    echo "Contoh penggunaan:"\n'
+        '    echo "  ./add.sh level_02_room"\n'
+        '    echo "  ./add.sh level_2_chiller [nama_ekstensi]"\n'
+        '    exit 1\n'
+        'fi\n'
+        f'if [ -f "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" ]; then\n'
+        f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" add "$@"\n'
+        "else\n"
+        '    python "$SCRIPT_DIR/tools/dev_tools.py" add "$@"\n'
+        "fi\n"
+    )
+    list_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"\n'
+        f'if [ -f "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" ]; then\n'
+        f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" list "$@"\n'
+        "else\n"
+        '    python "$SCRIPT_DIR/tools/dev_tools.py" list "$@"\n'
+        "fi\n"
+    )
+
+    root_init_sh = ws / "init_framework.sh"
+    root_add_sh = ws / "add.sh"
+    root_list_sh = ws / "list_levels.sh"
+
     created_shortcuts = []
     if not root_init_bat.exists():
         root_init_bat.write_text(init_cmd, encoding="utf-8")
@@ -210,6 +256,17 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_list_bat.exists():
         root_list_bat.write_text(list_cmd, encoding="utf-8")
         created_shortcuts.append("list_levels.bat")
+
+    if not root_init_sh.exists():
+        root_init_sh.write_text(init_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("init_framework.sh")
+    if not root_add_sh.exists():
+        root_add_sh.write_text(add_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("add.sh")
+    if not root_list_sh.exists():
+        root_list_sh.write_text(list_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("list_levels.sh")
+
     if created_shortcuts:
         print(f"  [+] Exported root shortcuts: {', '.join(created_shortcuts)} to project root")
 
