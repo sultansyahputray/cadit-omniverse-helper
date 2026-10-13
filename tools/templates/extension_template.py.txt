@@ -3,6 +3,11 @@
 
 import omni.ext
 import omni.kit.app
+try:
+    import omni.ui as ui
+except ImportError:
+    ui = None
+
 from .core.manager import LevelManager
 
 
@@ -12,6 +17,7 @@ class {ext_class_name}(omni.ext.IExt):
     def on_startup(self, ext_id: str):
         print(f"[{ext_id}] Starting up modular multi-level extension...")
         self.manager = LevelManager()
+        self._window = None
 
         # Connect 60 FPS update stream
         app = omni.kit.app.get_app()
@@ -20,12 +26,32 @@ class {ext_class_name}(omni.ext.IExt):
             .create_subscription_to_pop(self._on_update, name="{package_name}.update")
         )
 
+        # Build Interactive Level Navigator UI
+        self._build_ui()
+
         # Automatically start initial level if registered
         levels = self.manager.get_registered_levels()
         if levels:
             first_level = list(levels.keys())[0]
             print(f"[{ext_id}] Auto-activating initial level: '{first_level}'")
             self.manager.navigate_to(first_level)
+
+    def _build_ui(self):
+        if not ui:
+            return
+        try:
+            self._window = ui.Window("Level Navigator", width=320, height=220)
+            with self._window.frame:
+                with ui.VStack(spacing=8):
+                    ui.Label("🎮 Modular Level Navigator", height=24)
+                    ui.Label("Klik tombol di bawah untuk berganti level:", height=18)
+                    ui.Line(height=2)
+                    levels = self.manager.get_registered_levels()
+                    for lvl_id, disp_name in levels.items():
+                        btn = ui.Button(f"🚀 {disp_name}", height=34)
+                        btn.set_clicked_fn(lambda l=lvl_id: self.manager.navigate_to(l))
+        except Exception as e:
+            print(f"[{ext_class_name}] UI setup failed: {e}")
 
     def _on_update(self, e):
         dt = e.payload.get("dt", 0.016)
@@ -35,6 +61,8 @@ class {ext_class_name}(omni.ext.IExt):
     def on_shutdown(self):
         print("[{package_name}] Shutting down...")
         self._update_sub = None
+        if self._window:
+            self._window = None
         if hasattr(self, "manager") and self.manager:
             self.manager.on_shutdown()
             self.manager = None

@@ -24,7 +24,7 @@ VIEWCUBE_DIRECTIONS = {
     "iso":    Gf.Vec3d(1.0, 1.0, 1.0).GetNormalized(),
     "top":    Gf.Vec3d(0.0001, 1.0, 0.0001).GetNormalized(),
     "bottom": Gf.Vec3d(0.0001, -1.0, 0.0001).GetNormalized(),
-    "front":  Gf.Vec3d(0.0, 0.2, 1.0).GetNormalized(),
+    "front":  Gf.Vec3d(0.0, 0.0, 1.0).GetNormalized(),
     "back":   Gf.Vec3d(0.0, 0.2, -1.0).GetNormalized(),
     "left":   Gf.Vec3d(-1.0, 0.2, 0.0).GetNormalized(),
     "right":  Gf.Vec3d(1.0, 0.2, 0.0).GetNormalized(),
@@ -115,6 +115,69 @@ class CameraHelper:
                         Sdf.VariabilityUniform
                     )
                 coi_attr.Set(Gf.Vec3d(0.0, 0.0, -distance))
+
+    def set_camera_pose(
+        self,
+        stage: Usd.Stage,
+        position: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 1000.0),
+        rotation: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
+        distance: float = 1000.0
+    ) -> None:
+        """
+        Sets explicit camera position (x, y, z) and Euler rotation (rot_x, rot_y, rot_z in degrees).
+        Setting rotation=(0, 0, 0) aligns the camera perfectly along the coordinate axes looking towards -Z.
+        """
+        self._disable_cursor_tumble()
+        cam_prim = self.get_active_camera_prim(stage)
+        if not cam_prim or not cam_prim.IsValid():
+            return
+
+        rot_x, rot_y, rot_z = float(rotation[0]), float(rotation[1]), float(rotation[2])
+        pos_x, pos_y, pos_z = float(position[0]), float(position[1]), float(position[2])
+
+        # Euler XYZ rotation in USD degrees
+        rot = (
+            Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), rot_x) *
+            Gf.Rotation(Gf.Vec3d(0.0, 1.0, 0.0), rot_y) *
+            Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), rot_z)
+        )
+        cam_mat = Gf.Matrix4d(1.0).SetRotate(rot)
+        cam_mat.SetTranslateOnly(Gf.Vec3d(pos_x, pos_y, pos_z))
+
+        session_layer = stage.GetSessionLayer()
+        layers_to_edit = [session_layer] if session_layer else []
+        root_layer = stage.GetRootLayer()
+        if root_layer and root_layer not in layers_to_edit:
+            layers_to_edit.append(root_layer)
+
+        for layer in layers_to_edit:
+            with Usd.EditContext(stage, Usd.EditTarget(layer)):
+                xformable = UsdGeom.Xformable(cam_prim)
+                xform_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
+                        xform_op = op
+                        break
+                if not xform_op:
+                    xform_op = xformable.AddTransformOp()
+                xform_op.Set(cam_mat)
+
+                cam_api = UsdGeom.Camera(cam_prim)
+                cam_api.CreateFocusDistanceAttr().Set(distance)
+
+                coi_attr = cam_prim.GetAttribute("omni:kit:centerOfInterest")
+                if not coi_attr or not coi_attr.IsValid():
+                    coi_attr = cam_prim.CreateAttribute(
+                        "omni:kit:centerOfInterest",
+                        Sdf.ValueTypeNames.Vector3d,
+                        True,
+                        Sdf.VariabilityUniform
+                    )
+                coi_attr.Set(Gf.Vec3d(0.0, 0.0, -distance))
+
+        # Update internal tracking
+        self._current_distance = distance
+        self._current_pivot = Gf.Vec3d(pos_x, pos_y, pos_z - distance)
 
     def set_camera_pivot(
         self,

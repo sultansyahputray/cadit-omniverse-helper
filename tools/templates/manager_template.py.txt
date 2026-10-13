@@ -126,8 +126,10 @@ class LevelManager:
 
             # 2. Check Dynamic Map Switcher
             if next_handler.map_url:
-                current_url = usd_context.get_stage_url() if usd_context else None
-                if current_url != next_handler.map_url:
+                current_url = usd_context.get_stage_url() if usd_context else ""
+                norm_curr = os.path.normpath(current_url or "").replace("\\", "/").lower()
+                norm_target = os.path.normpath(next_handler.map_url).replace("\\", "/").lower()
+                if norm_curr != norm_target:
                     print(f"[LevelManager] Loading stage for '{target_level_id}': {next_handler.map_url}")
                     await usd_context.open_stage_async(next_handler.map_url)
                     stage = usd_context.get_stage()

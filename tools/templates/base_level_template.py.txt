@@ -75,6 +75,9 @@ class BaseLevelHandler(ABC):
         self.color_helper.restore_all_colors(stage)
 
     # --- Delegated Camera Methods ---
+    def set_camera_pose(self, stage: Usd.Stage, position=(0.0, 0.0, 1000.0), rotation=(0.0, 0.0, 0.0), distance=1000.0) -> None:
+        self.camera_helper.set_camera_pose(stage, position, rotation, distance)
+
     def set_camera_pivot(self, stage: Usd.Stage, pivot_point=(0.0, 0.0, 0.0), distance=1000.0) -> None:
         self.camera_helper.set_camera_pivot(stage, pivot_point, distance)
 
