@@ -176,5 +176,6 @@ class LevelManager:
             except Exception:
                 pass
             self.selection_helper = None
+        BaseLevelHandler._navigator_window = None
         self._handlers.clear()
         self._active_level_id = None

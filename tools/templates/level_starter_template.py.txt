@@ -38,6 +38,9 @@ class Level01DefaultHandler(BaseLevelHandler):
         # 🎯 Setup kamera awal: Default view 'iso' (Isometric) menghadap (0, 0, 0) pada jarak 1000
         self.set_camera_view(stage, "iso", distance=1000.0)
 
+        # 🎯 Tampilkan Level Navigator popup (mendeteksi semua level yang terdaftar otomatis):
+        self.show_level_navigator()
+
         if stage:
             prim = stage.GetPrimAtPath(self.root_prim_path)
             if prim.IsValid() and prim.IsA(UsdGeom.Imageable):

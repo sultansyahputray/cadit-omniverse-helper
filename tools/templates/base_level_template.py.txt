@@ -116,12 +116,54 @@ class BaseLevelHandler(ABC):
         if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
             self.manager.selection_helper.set_selection(prim_path)
 
-    # --- Navigation Request ---
+    # Class-level reference to the Level Navigator Window
+    _navigator_window = None
+
+    # --- Navigation Request & UI Popup ---
     def request_navigate(self, target_level_id: str, item_id: Optional[str] = None, **extra_data) -> bool:
         """Requests LevelManager to switch to target_level_id."""
         if self.manager:
             return self.manager.navigate_to(target_level_id, item_id, **extra_data)
         return False
+
+    def show_level_navigator(self, title: str = "Level Navigator", width: int = 320, height: int = 220) -> None:
+        """
+        Displays an interactive Level Navigator UI popup.
+        Dynamically detects all registered levels in the project and provides navigation buttons.
+        Can be called in on_enter() of any level handler.
+        """
+        try:
+            import omni.ui as ui
+        except ImportError:
+            return
+
+        try:
+            if not BaseLevelHandler._navigator_window:
+                BaseLevelHandler._navigator_window = ui.Window(title, width=width, height=height)
+            else:
+                BaseLevelHandler._navigator_window.title = title
+                BaseLevelHandler._navigator_window.visible = True
+
+            levels = self.manager.get_registered_levels() if self.manager else {}
+            active_id = self.level_id
+
+            with BaseLevelHandler._navigator_window.frame:
+                with ui.VStack(spacing=8):
+                    ui.Label("Modular Level Navigator", height=24)
+                    ui.Label("Klik tombol di bawah untuk berganti level:", height=18)
+                    ui.Line(height=2)
+                    for lvl_id, disp_name in levels.items():
+                        is_active = (lvl_id == active_id)
+                        btn = ui.Button(f"{disp_name}" + (" (Current)" if is_active else ""), height=34)
+                        btn.enabled = not is_active
+                        btn.set_clicked_fn(lambda l=lvl_id: self.request_navigate(l))
+        except Exception as e:
+            print(f"[{self.level_id}] Level Navigator UI note: {e}")
+
+    def hide_level_navigator(self) -> None:
+        """Hides the level navigator popup."""
+        if BaseLevelHandler._navigator_window:
+            BaseLevelHandler._navigator_window.visible = False
 
     # --- Lifecycle Hooks ---
     @abstractmethod
