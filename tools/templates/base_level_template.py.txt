@@ -208,9 +208,9 @@ class BaseLevelHandler(ABC):
             "is_defined": prim.IsDefined(),
         }
 
-        # 2. Bound Material (UsdShade)
+        # 2. Bound Material (UsdShade) with Smart Recursive Search
         try:
-            from pxr import UsdShade
+            from pxr import UsdShade, UsdGeom
             binding_api = UsdShade.MaterialBindingAPI(prim)
             mat, _ = binding_api.ComputeBoundMaterial()
             if mat:
@@ -218,9 +218,45 @@ class BaseLevelHandler(ABC):
                 info["material"] = {
                     "material_name": mat_prim.GetName(),
                     "material_path": mat_prim.GetPath().pathString,
+                    "binding_level": "direct (assigned to this prim)"
                 }
             else:
-                info["material"] = None
+                # 🔍 Smart Recursive Search: Check all child / grandchild meshes
+                found_materials = []
+                descendant_count = 0
+                for descendant in Usd.PrimRange(prim):
+                    if descendant == prim:
+                        continue
+                    descendant_count += 1
+                    desc_binding = UsdShade.MaterialBindingAPI(descendant)
+                    d_mat, _ = desc_binding.ComputeBoundMaterial()
+                    if d_mat:
+                        d_prim = d_mat.GetPrim()
+                        entry = {
+                            "material_name": d_prim.GetName(),
+                            "material_path": d_prim.GetPath().pathString,
+                            "bound_to": descendant.GetPath().pathString
+                        }
+                        if entry not in found_materials:
+                            found_materials.append(entry)
+
+                if found_materials:
+                    if len(found_materials) == 1:
+                        info["material"] = {
+                            "material_name": found_materials[0]["material_name"],
+                            "material_path": found_materials[0]["material_path"],
+                            "binding_level": f"recursive (found on descendant: {found_materials[0]['bound_to']})"
+                        }
+                    else:
+                        info["material"] = {
+                            "material_name": f"{len(found_materials)} materials in descendants",
+                            "binding_level": "multiple descendants",
+                            "details": found_materials
+                        }
+                else:
+                    info["material"] = None
+                    if descendant_count > 0:
+                        info["material_search_status"] = f"No material bound on this prim or any of its {descendant_count} descendants"
         except Exception as e:
             info["material"] = f"Error: {e}"
 
