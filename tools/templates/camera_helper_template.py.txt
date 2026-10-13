@@ -52,34 +52,76 @@ class CameraHelper:
                     settings.set("/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
                     settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
                     settings.set("/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
+                    settings.set("/exts/omni.kit.viewport.navigation.camera_manipulator/orbitAutoFrameSelected", False)
+                    settings.set("/persistent/exts/omni.kit.viewport.navigation.camera_manipulator/orbitAutoFrameSelected", False)
+                    settings.set("/app/viewport/autoFrame/mode", "disabled")
+                    settings.set("/persistent/app/viewport/autoFrame/mode", "disabled")
             except Exception:
                 pass
 
     def get_active_camera_prim(self, stage: Usd.Stage) -> Optional[Usd.Prim]:
-        """Resolves active viewport camera prim."""
+        """Resolves active viewport camera prim, defining /OmniverseKit_Persp if missing."""
         if not stage:
             return None
+
+        cam_path = None
         if vp_utils:
             try:
                 v_api = vp_utils.get_active_viewport()
                 if v_api and hasattr(v_api, "camera_path") and v_api.camera_path:
-                    prim = stage.GetPrimAtPath(str(v_api.camera_path))
-                    if prim and prim.IsValid():
-                        return prim
+                    cam_path = str(v_api.camera_path)
             except Exception:
                 pass
 
-        for cam_path in ["/OmniverseKit_Persp", "/World/Camera", "/Camera"]:
-            prim = stage.GetPrimAtPath(cam_path)
-            if prim and prim.IsValid():
-                return prim
-        return None
+        if not cam_path:
+            cam_path = "/OmniverseKit_Persp"
 
-    def _apply_pose(self, stage: Usd.Stage, cam_pos: Gf.Vec3d, look_at: Gf.Vec3d, distance: float) -> None:
-        """Calculates LookAt transform and applies pose and centerOfInterest attribute to camera prim."""
-        cam_prim = self.get_active_camera_prim(stage)
-        if not cam_prim or not cam_prim.IsValid():
+        prim = stage.GetPrimAtPath(cam_path)
+        if not prim or not prim.IsValid():
+            cam = UsdGeom.Camera.Define(stage, cam_path)
+            prim = cam.GetPrim()
+
+        return prim
+
+    def _configure_camera_prim(self, p: Usd.Prim, cam_mat: Gf.Matrix4d, dist: float, focal_length: float = 20.0) -> None:
+        """Configures transform, perspective attributes, centerOfInterest, and unlocks camera."""
+        xformable = UsdGeom.Xformable(p)
+        xform_op = None
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
+                xform_op = op
+                break
+        if not xform_op:
+            xform_op = xformable.AddTransformOp()
+        xform_op.Set(cam_mat)
+
+        cam_api = UsdGeom.Camera(p)
+        cam_api.CreateProjectionAttr().Set(UsdGeom.Tokens.perspective)
+        cam_api.CreateFocusDistanceAttr().Set(dist)
+        cam_api.CreateFocalLengthAttr().Set(focal_length)
+        cam_api.CreateClippingRangeAttr().Set(Gf.Vec2f(1.0, 1000000.0))
+
+        coi_attr = p.GetAttribute("omni:kit:centerOfInterest")
+        if not coi_attr or not coi_attr.IsValid():
+            coi_attr = p.CreateAttribute(
+                "omni:kit:centerOfInterest",
+                Sdf.ValueTypeNames.Vector3d,
+                True,
+                Sdf.VariabilityUniform
+            )
+        coi_attr.Set(Gf.Vec3d(0.0, 0.0, -dist))
+
+        for lock_name in ["camera:omni:kit:cameraLock", "omni:kit:cameraLock"]:
+            l_attr = p.GetAttribute(lock_name)
+            if l_attr and l_attr.IsValid():
+                l_attr.Set(False)
+
+    def _apply_pose(self, stage: Usd.Stage, cam_pos: Gf.Vec3d, look_at: Gf.Vec3d, distance: float, focal_length: float = 20.0) -> None:
+        """Calculates LookAt transform and synchronizes camera prim across Session and Root layers."""
+        if not stage:
             return
+
+        self._disable_cursor_tumble()
 
         up = Gf.Vec3d(0.0, 1.0, 0.0)
         view_dir = (look_at - cam_pos).GetNormalized()
@@ -89,99 +131,71 @@ class CameraHelper:
         rot_mat = Gf.Matrix4d().SetLookAt(cam_pos, look_at, up)
         cam_mat = rot_mat.GetInverse()
 
+        cam_prim = self.get_active_camera_prim(stage)
+        if not cam_prim or not cam_prim.IsValid():
+            return
+
+        cam_path = cam_prim.GetPath().pathString
+
+        # Apply to both SessionLayer and RootLayer for total stability across stages
         session_layer = stage.GetSessionLayer()
-        layers_to_edit = [session_layer] if session_layer else []
+        if session_layer:
+            with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+                p = stage.GetPrimAtPath(cam_path)
+                if not p or not p.IsValid():
+                    cam = UsdGeom.Camera.Define(stage, cam_path)
+                    p = cam.GetPrim()
+                if p and p.IsValid():
+                    self._configure_camera_prim(p, cam_mat, distance, focal_length)
+
         root_layer = stage.GetRootLayer()
-        if root_layer and root_layer not in layers_to_edit:
-            layers_to_edit.append(root_layer)
+        if root_layer and root_layer != session_layer:
+            with Usd.EditContext(stage, Usd.EditTarget(root_layer)):
+                p = stage.GetPrimAtPath(cam_path)
+                if not p or not p.IsValid():
+                    cam = UsdGeom.Camera.Define(stage, cam_path)
+                    p = cam.GetPrim()
+                if p and p.IsValid():
+                    self._configure_camera_prim(p, cam_mat, distance, focal_length)
 
-        for layer in layers_to_edit:
-            with Usd.EditContext(stage, Usd.EditTarget(layer)):
-                xformable = UsdGeom.Xformable(cam_prim)
-                xform_op = None
-                for op in xformable.GetOrderedXformOps():
-                    if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
-                        xform_op = op
-                        break
-                if not xform_op:
-                    xform_op = xformable.AddTransformOp()
-                xform_op.Set(cam_mat)
+        # Sync viewport to ensure camera binding and reset internal manipulator caches
+        if vp_utils:
+            try:
+                v_api = vp_utils.get_active_viewport()
+                if v_api:
+                    v_api.camera_path = cam_path
+            except Exception:
+                pass
 
-                cam_api = UsdGeom.Camera(cam_prim)
-                cam_api.CreateFocusDistanceAttr().Set(distance)
+        try:
+            import omni.kit.commands
+            omni.kit.commands.execute("SetViewportCamera", camera_path=cam_path)
+        except Exception:
+            pass
 
-                coi_attr = cam_prim.GetAttribute("omni:kit:centerOfInterest")
-                if not coi_attr or not coi_attr.IsValid():
-                    coi_attr = cam_prim.CreateAttribute(
-                        "omni:kit:centerOfInterest",
-                        Sdf.ValueTypeNames.Vector3d,
-                        True,
-                        Sdf.VariabilityUniform
-                    )
-                coi_attr.Set(Gf.Vec3d(0.0, 0.0, -distance))
+        # Update internal tracking
+        self._current_distance = distance
+        self._current_pivot = look_at
 
     def set_camera_pose(
         self,
         stage: Usd.Stage,
         position: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 1000.0),
-        rotation: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
-        distance: float = 1000.0
+        rotation: Optional[Union[Tuple[float, float, float], Gf.Vec3d]] = None,
+        distance: float = 1000.0,
+        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0)
     ) -> None:
         """
-        Sets explicit camera position (x, y, z) and Euler rotation (rot_x, rot_y, rot_z in degrees).
-        Setting rotation=(0, 0, 0) aligns the camera perfectly along the coordinate axes looking towards -Z.
+        Sets explicit camera position (x, y, z) and locks the orbit pivot strictly to pivot_point (default: 0, 0, 0).
+        If rotation is (0, 0, 0) or None, camera points directly at pivot_point with Euler rotation (0, 0, 0).
         """
-        self._disable_cursor_tumble()
-        cam_prim = self.get_active_camera_prim(stage)
-        if not cam_prim or not cam_prim.IsValid():
-            return
+        pos_vec = Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
+        piv_vec = Gf.Vec3d(float(pivot_point[0]), float(pivot_point[1]), float(pivot_point[2]))
+        dist = (pos_vec - piv_vec).GetLength()
+        if dist < 1.0:
+            dist = float(distance)
 
-        rot_x, rot_y, rot_z = float(rotation[0]), float(rotation[1]), float(rotation[2])
-        pos_x, pos_y, pos_z = float(position[0]), float(position[1]), float(position[2])
-
-        # Euler XYZ rotation in USD degrees
-        rot = (
-            Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), rot_x) *
-            Gf.Rotation(Gf.Vec3d(0.0, 1.0, 0.0), rot_y) *
-            Gf.Rotation(Gf.Vec3d(0.0, 0.0, 1.0), rot_z)
-        )
-        cam_mat = Gf.Matrix4d(1.0).SetRotate(rot)
-        cam_mat.SetTranslateOnly(Gf.Vec3d(pos_x, pos_y, pos_z))
-
-        session_layer = stage.GetSessionLayer()
-        layers_to_edit = [session_layer] if session_layer else []
-        root_layer = stage.GetRootLayer()
-        if root_layer and root_layer not in layers_to_edit:
-            layers_to_edit.append(root_layer)
-
-        for layer in layers_to_edit:
-            with Usd.EditContext(stage, Usd.EditTarget(layer)):
-                xformable = UsdGeom.Xformable(cam_prim)
-                xform_op = None
-                for op in xformable.GetOrderedXformOps():
-                    if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
-                        xform_op = op
-                        break
-                if not xform_op:
-                    xform_op = xformable.AddTransformOp()
-                xform_op.Set(cam_mat)
-
-                cam_api = UsdGeom.Camera(cam_prim)
-                cam_api.CreateFocusDistanceAttr().Set(distance)
-
-                coi_attr = cam_prim.GetAttribute("omni:kit:centerOfInterest")
-                if not coi_attr or not coi_attr.IsValid():
-                    coi_attr = cam_prim.CreateAttribute(
-                        "omni:kit:centerOfInterest",
-                        Sdf.ValueTypeNames.Vector3d,
-                        True,
-                        Sdf.VariabilityUniform
-                    )
-                coi_attr.Set(Gf.Vec3d(0.0, 0.0, -distance))
-
-        # Update internal tracking
-        self._current_distance = distance
-        self._current_pivot = Gf.Vec3d(pos_x, pos_y, pos_z - distance)
+        self._apply_pose(stage, cam_pos=pos_vec, look_at=piv_vec, distance=dist)
 
     def set_camera_pivot(
         self,
@@ -192,7 +206,6 @@ class CameraHelper:
         """
         Sets the camera orbit pivot point and positions the camera at the given distance.
         """
-        self._disable_cursor_tumble()
         self._current_pivot = Gf.Vec3d(pivot_point[0], pivot_point[1], pivot_point[2])
         self._current_distance = max(1.0, float(distance))
 
