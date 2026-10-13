@@ -48,6 +48,8 @@ class CameraHelper:
                 if settings:
                     settings.set("/app/viewport/camera/tumbleAtCursor", False)
                     settings.set("/persistent/app/viewport/camera/tumbleAtCursor", False)
+                    settings.set("/app/viewport/manipulator/camera/tumbleAtCursor", False)
+                    settings.set("/persistent/app/viewport/manipulator/camera/tumbleAtCursor", False)
                     settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
                     settings.set("/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
                     settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
@@ -84,37 +86,60 @@ class CameraHelper:
         return prim
 
     def _configure_camera_prim(self, p: Usd.Prim, cam_mat: Gf.Matrix4d, dist: float, focal_length: float = 20.0) -> None:
-        """Configures transform, perspective attributes, centerOfInterest, and unlocks camera."""
-        xformable = UsdGeom.Xformable(p)
-        xform_op = None
-        for op in xformable.GetOrderedXformOps():
-            if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
-                xform_op = op
-                break
-        if not xform_op:
-            xform_op = xformable.AddTransformOp()
-        xform_op.Set(cam_mat)
+        """
+        Configures transform, perspective attributes, centerOfInterest, and unlocks camera.
+        Explicitly clears conflicting individual translate/rotate ops to ensure transform op takes precedence.
+        """
+        try:
+            xformable = UsdGeom.Xformable(p)
 
-        cam_api = UsdGeom.Camera(p)
-        cam_api.CreateProjectionAttr().Set(UsdGeom.Tokens.perspective)
-        cam_api.CreateFocusDistanceAttr().Set(dist)
-        cam_api.CreateFocalLengthAttr().Set(focal_length)
-        cam_api.CreateClippingRangeAttr().Set(Gf.Vec2f(1.0, 1000000.0))
+            # Check if xformOp:transform already exists on the prim
+            trans_attr = p.GetAttribute("xformOp:transform")
+            order_attr = xformable.GetXformOpOrderAttr()
+            cur_order = list(order_attr.Get()) if order_attr and order_attr.IsValid() and order_attr.Get() else []
 
-        coi_attr = p.GetAttribute("omni:kit:centerOfInterest")
-        if not coi_attr or not coi_attr.IsValid():
-            coi_attr = p.CreateAttribute(
-                "omni:kit:centerOfInterest",
-                Sdf.ValueTypeNames.Vector3d,
-                True,
-                Sdf.VariabilityUniform
-            )
-        coi_attr.Set(Gf.Vec3d(0.0, 0.0, -dist))
+            if "xformOp:transform" in cur_order and trans_attr and trans_attr.IsValid():
+                trans_attr.Set(cam_mat)
+            else:
+                # Clear individual translate/rotate/scale ops that override transform
+                for op_name in ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]:
+                    attr = p.GetAttribute(op_name)
+                    if attr and attr.IsValid():
+                        attr.Clear()
 
-        for lock_name in ["camera:omni:kit:cameraLock", "omni:kit:cameraLock"]:
-            l_attr = p.GetAttribute(lock_name)
-            if l_attr and l_attr.IsValid():
-                l_attr.Set(False)
+                if "xformOp:transform" not in cur_order:
+                    xformable.ClearXformOpOrder()
+                    op = xformable.AddTransformOp()
+                    op.Set(cam_mat)
+                else:
+                    if not trans_attr or not trans_attr.IsValid():
+                        trans_attr = p.CreateAttribute("xformOp:transform", Sdf.ValueTypeNames.Matrix4d)
+                    trans_attr.Set(cam_mat)
+
+            cam_api = UsdGeom.Camera(p)
+            cam_api.CreateProjectionAttr().Set(UsdGeom.Tokens.perspective)
+            cam_api.CreateFocusDistanceAttr().Set(dist)
+            cam_api.CreateFocalLengthAttr().Set(focal_length)
+            cam_api.CreateClippingRangeAttr().Set(Gf.Vec2f(1.0, 1000000.0))
+
+            # Set Center of Interest: In camera space looking along -Z, COI is (0, 0, -dist)
+            coi_attr = p.GetAttribute("omni:kit:centerOfInterest")
+            if not coi_attr or not coi_attr.IsValid():
+                coi_attr = p.CreateAttribute(
+                    "omni:kit:centerOfInterest",
+                    Sdf.ValueTypeNames.Vector3d,
+                    True,
+                    Sdf.VariabilityUniform
+                )
+            coi_attr.Set(Gf.Vec3d(0.0, 0.0, -dist))
+
+            for lock_name in ["camera:omni:kit:cameraLock", "omni:kit:cameraLock"]:
+                l_attr = p.GetAttribute(lock_name)
+                if l_attr and l_attr.IsValid():
+                    l_attr.Set(False)
+
+        except Exception as e:
+            print(f"[CameraHelper] Error configuring camera prim: {e}")
 
     def _apply_pose(self, stage: Usd.Stage, cam_pos: Gf.Vec3d, look_at: Gf.Vec3d, distance: float, focal_length: float = 20.0) -> None:
         """Calculates LookAt transform and synchronizes camera prim across Session and Root layers."""
@@ -133,6 +158,7 @@ class CameraHelper:
 
         cam_prim = self.get_active_camera_prim(stage)
         if not cam_prim or not cam_prim.IsValid():
+            print("[CameraHelper] Warning: No valid camera prim found on stage.")
             return
 
         cam_path = cam_prim.GetPath().pathString
@@ -158,7 +184,7 @@ class CameraHelper:
                 if p and p.IsValid():
                     self._configure_camera_prim(p, cam_mat, distance, focal_length)
 
-        # Sync viewport to ensure camera binding and reset internal manipulator caches
+        # Sync active viewport
         if vp_utils:
             try:
                 v_api = vp_utils.get_active_viewport()
@@ -177,6 +203,8 @@ class CameraHelper:
         self._current_distance = distance
         self._current_pivot = look_at
 
+        print(f"[CameraHelper] Camera posed: Pos=({cam_pos[0]:.1f}, {cam_pos[1]:.1f}, {cam_pos[2]:.1f}) -> Orbit Pivot=({look_at[0]:.1f}, {look_at[1]:.1f}, {look_at[2]:.1f}) | Dist={distance:.1f}")
+
     def set_camera_pose(
         self,
         stage: Usd.Stage,
@@ -187,7 +215,6 @@ class CameraHelper:
     ) -> None:
         """
         Sets explicit camera position (x, y, z) and locks the orbit pivot strictly to pivot_point (default: 0, 0, 0).
-        If rotation is (0, 0, 0) or None, camera points directly at pivot_point with Euler rotation (0, 0, 0).
         """
         pos_vec = Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
         piv_vec = Gf.Vec3d(float(pivot_point[0]), float(pivot_point[1]), float(pivot_point[2]))
@@ -195,6 +222,7 @@ class CameraHelper:
         if dist < 1.0:
             dist = float(distance)
 
+        print(f"[CameraHelper] Setting camera pose to Pos={pos_vec}, Orbit Pivot locked to {piv_vec}")
         self._apply_pose(stage, cam_pos=pos_vec, look_at=piv_vec, distance=dist)
 
     def set_camera_pivot(
@@ -219,28 +247,35 @@ class CameraHelper:
         distance: Optional[float] = None
     ) -> bool:
         """
-        Moves orbit pivot to the center of the target object's bounding box.
+        Moves orbit pivot to the geometric center (midpoint) of the target object's bounding box.
         """
         if not stage or not prim_path:
             return False
 
         prim = stage.GetPrimAtPath(prim_path)
         if not prim or not prim.IsValid():
+            print(f"[CameraHelper] Cannot focus: prim '{prim_path}' is not valid on stage.")
             return False
 
-        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [
+            UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy
+        ])
         bound = bbox_cache.ComputeWorldBound(prim)
         rng = bound.ComputeAlignedRange()
         if rng.IsEmpty():
+            print(f"[CameraHelper] Bounding box is empty for '{prim_path}'")
             return False
 
         mid = rng.GetMidpoint()
-        target_dist = distance if distance is not None else max(100.0, (rng.GetMax() - rng.GetMin()).GetLength() * 1.5)
+        size = (rng.GetMax() - rng.GetMin()).GetLength()
+        target_dist = distance if distance is not None else max(100.0, size * 1.5)
+        print(f"[CameraHelper] Locking orbit pivot to object '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (dist={target_dist:.1f})")
         self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist)
         return True
 
     def reset_camera_pivot(self, stage: Usd.Stage) -> None:
         """Resets camera pivot back to the global origin (0, 0, 0)."""
+        print("[CameraHelper] Resetting orbit pivot to origin (0.0, 0.0, 0.0)")
         self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=self._current_distance)
 
     def set_camera_view(self, stage: Usd.Stage, view_name: str) -> bool:

@@ -64,3 +64,8 @@ class {class_name}(BaseLevelHandler):
     def on_update(self, stage: Usd.Stage, dt: float) -> None:
         # 60 FPS update loop (misal: dynamic perspective cutaway dinding)
         pass
+
+    def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
+        self.selected_item = prim_path
+        super().on_selection_changed(stage, prim_path)
+

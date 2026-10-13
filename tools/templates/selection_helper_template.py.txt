@@ -11,7 +11,12 @@ from pxr import Usd, Sdf
 try:
     import omni.usd
 except ImportError:
-    omni_usd = None
+    omni = None
+
+try:
+    import omni.kit.commands
+except ImportError:
+    pass
 
 
 class SelectionHelper:
@@ -58,6 +63,8 @@ class SelectionHelper:
 
             current_paths = selection.get_selected_prim_paths()
             if not current_paths:
+                if self.saved_selected_prim is not None:
+                    print("[SelectionHelper] Selection cleared.")
                 self.previous_selection_set = set()
                 self.saved_selected_prim = None
                 self._notify_level(stage or usd_context.get_stage(), None)
@@ -74,6 +81,7 @@ class SelectionHelper:
             new_items = [p for p in current_paths if p not in prev_set]
             saved_target_id = new_items[-1] if new_items else current_paths[-1]
             self.saved_selected_prim = saved_target_id
+            print(f"[SelectionHelper] Single selection updated: '{saved_target_id}'")
 
             # 2. Reset seleksi dan tetapkan kembali hanya 1 objek terbaru (menghindari multi-selection)
             if len(current_paths) > 1:
@@ -83,7 +91,6 @@ class SelectionHelper:
                     selection.set_selected_prim_paths([saved_target_id], False)
 
                     try:
-                        import omni.kit.commands
                         omni.kit.commands.execute(
                             'SelectPrims',
                             old_selected_paths=current_paths,
@@ -106,8 +113,8 @@ class SelectionHelper:
         if self.manager and self.manager.active_level:
             try:
                 self.manager.active_level.on_selection_changed(stage, prim_path)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[SelectionHelper] Level notification error: {e}")
 
     def get_selected_prim(self) -> Optional[str]:
         """Returns the currently active single selected prim path."""

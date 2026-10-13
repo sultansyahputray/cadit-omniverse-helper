@@ -140,4 +140,12 @@ class BaseLevelHandler(ABC):
 
     def on_selection_changed(self, stage: Optional[Usd.Stage], prim_path: Optional[str]) -> None:
         """Called whenever user selects or unselects an object in the 3D viewport."""
-        pass
+        if not stage:
+            return
+        if prim_path:
+            print(f"[{self.level_id}] Selected prim '{prim_path}' -> Locking orbit pivot to object center")
+            self.set_camera_pivot_to_object(stage, prim_path)
+        else:
+            print(f"[{self.level_id}] Selection cleared -> Resetting orbit pivot to (0, 0, 0)")
+            self.reset_camera_pivot(stage)
+
