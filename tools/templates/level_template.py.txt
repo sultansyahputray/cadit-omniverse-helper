@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+# Auto-generated Level Handler: {class_name}
+
+from typing import Dict, Any, Optional
+from pxr import Usd, UsdGeom
+
+from ..core.base_level import BaseLevelHandler
+from ..core.context import NavigationContext
+
+
+class {class_name}(BaseLevelHandler):
+    level_id = "{level_id}"
+    display_name = "{display_name}"
+
+    # [OPSIONAL] USD Map Stage URL jika level ini menggunakan file USD terpisah:
+    # map_url: Optional[str] = "./assets/maps/{level_id}.usd"
+
+    # Root prim path untuk level ini:
+    root_prim_path = "{root_prim_path}"
+
+    # 🎯 1. Objek yang dilacak koordinat layarnya untuk Web Dashboard (3D-to-2D Frustum Math):
+    tracked_objects = {
+        # "example_anchor": "{root_prim_path}"
+    }
+
+    # 🎯 2. Variabel warna lokal level (Direct Color Injection):
+    # status_color = "#00E5FF"
+
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.selected_item = None
+
+    def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
+        print(f"[{self.level_id}] Entered. Previous level: {context.previous_level}")
+
+        # 🎯 Setup kamera: atur poros putar dan sudut pandang
+        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=800.0)
+        self.set_camera_view(stage, "iso")
+
+        if stage:
+            prim = stage.GetPrimAtPath(self.root_prim_path)
+            if prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+
+            # Contoh manipulasi visibilitas:
+            # self.hide_objects(stage, ["/World/Roof"])
+
+            # Contoh direct color injection:
+            # self.set_color(stage, "/World/Equipment", "#FFB300")
+
+    def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
+        print(f"[{self.level_id}] Exiting to {next_level_id}")
+
+        # Selalu pulihkan seluruh visibilitas, warna, dan poros kamera ke kondisi awal:
+        self.restore_all_visibility(stage)
+        self.restore_all_colors(stage)
+        self.reset_camera_pivot(stage)
+
+        return {
+            "from_level": self.level_id,
+            "last_selection": self.selected_item
+        }
+
+    def on_update(self, stage: Usd.Stage, dt: float) -> None:
+        # 60 FPS update loop (misal: dynamic perspective cutaway dinding)
+        pass

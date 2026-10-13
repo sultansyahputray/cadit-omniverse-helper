@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+# Auto-generated Starter Level by init_framework.bat
+
+from typing import Dict, Any
+from pxr import Usd, UsdGeom
+
+from ..core.base_level import BaseLevelHandler
+from ..core.context import NavigationContext
+
+
+class Level01DefaultHandler(BaseLevelHandler):
+    level_id = "level_01_default"
+    display_name = "Level 1 (Default Overview)"
+    root_prim_path = "/World"
+
+    # 🎯 1. Objek yang dilacak koordinat layarnya untuk Web Dashboard:
+    tracked_objects = {
+        "root_overview": "/World"
+    }
+
+    # 🎯 2. Variabel warna lokal level:
+    accent_color = "#00FFCC"
+
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.selected_item = None
+
+    def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
+        print(f"[{self.level_id}] Activated! Stage ready.")
+
+        # 🎯 Setup kamera awal: Pusat pivot di (0,0,0) dengan sudut isometrik
+        self.set_camera_pivot(stage, pivot_point=(0, 0, 0), distance=1000.0)
+        self.set_camera_view(stage, "iso")
+
+        if stage:
+            prim = stage.GetPrimAtPath(self.root_prim_path)
+            if prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+
+            # Contoh langsung inject warna variabel:
+            # self.set_color(stage, self.root_prim_path, self.accent_color)
+
+    def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
+        print(f"[{self.level_id}] Exiting to {next_level_id}")
+        # Kembalikan semua visibilitas, warna, dan pivot kamera ke kondisi awal:
+        self.restore_all_visibility(stage)
+        self.restore_all_colors(stage)
+        self.reset_camera_pivot(stage)
+        return {
+            "from_level": self.level_id,
+            "last_selection": self.selected_item
+        }
+
+    def on_update(self, stage: Usd.Stage, dt: float) -> None:
+        pass

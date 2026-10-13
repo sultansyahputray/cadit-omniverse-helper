@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+# Entry Point Extension for {package_name}
+
+import omni.ext
+import omni.kit.app
+from .core.manager import LevelManager
+
+
+class {ext_class_name}(omni.ext.IExt):
+    """Modular Multi-Level Extension Entry Point."""
+
+    def on_startup(self, ext_id: str):
+        print(f"[{ext_id}] Starting up modular multi-level extension...")
+        self.manager = LevelManager()
+
+        # Connect 60 FPS update stream
+        app = omni.kit.app.get_app()
+        self._update_sub = (
+            app.get_update_event_stream()
+            .create_subscription_to_pop(self._on_update, name="{package_name}.update")
+        )
+
+        # Automatically start initial level if registered
+        levels = self.manager.get_registered_levels()
+        if levels:
+            first_level = list(levels.keys())[0]
+            print(f"[{ext_id}] Auto-activating initial level: '{first_level}'")
+            self.manager.navigate_to(first_level)
+
+    def _on_update(self, e):
+        dt = e.payload.get("dt", 0.016)
+        if hasattr(self, "manager") and self.manager:
+            self.manager.on_update(dt)
+
+    def on_shutdown(self):
+        print("[{package_name}] Shutting down...")
+        self._update_sub = None
+        if hasattr(self, "manager") and self.manager:
+            self.manager.on_shutdown()
+            self.manager = None

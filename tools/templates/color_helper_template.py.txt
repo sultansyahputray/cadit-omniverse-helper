@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+ColorHelper Engine:
+Provides direct, unopinionated color injection into USD prims and meshes.
+Supports Hex ("#00E5FF") and RGB tuples.
+Applies changes cleanly on SessionLayer and restores original colors automatically upon level exit.
+"""
+
+from typing import Dict, Any, Union, Tuple, List, Optional
+from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
+
+
+class ColorHelper:
+    """Non-destructive USD color and material injection manager."""
+
+    def __init__(self):
+        # Maps prim_path -> original state dict (displayColor, original material path)
+        self._original_colors: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def parse_color(color: Union[str, Tuple[float, float, float], List[float]]) -> Gf.Vec3f:
+        """
+        Parses color from Hex string ("#RRGGBB") or RGB tuple into Gf.Vec3f (0.0 - 1.0).
+        """
+        if isinstance(color, str):
+            clean_hex = color.strip().lstrip("#")
+            if len(clean_hex) == 6:
+                r = int(clean_hex[0:2], 16) / 255.0
+                g = int(clean_hex[2:4], 16) / 255.0
+                b = int(clean_hex[4:6], 16) / 255.0
+                return Gf.Vec3f(r, g, b)
+            elif len(clean_hex) == 3:
+                r = int(clean_hex[0] * 2, 16) / 255.0
+                g = int(clean_hex[1] * 2, 16) / 255.0
+                b = int(clean_hex[2] * 2, 16) / 255.0
+                return Gf.Vec3f(r, g, b)
+        elif isinstance(color, (tuple, list)) and len(color) >= 3:
+            scale = 255.0 if max(color[0], color[1], color[2]) > 1.0 else 1.0
+            return Gf.Vec3f(float(color[0]) / scale, float(color[1]) / scale, float(color[2]) / scale)
+        return Gf.Vec3f(1.0, 1.0, 1.0)
+
+    def _get_or_create_material(self, stage: Usd.Stage, color_vec: Gf.Vec3f) -> Optional[UsdShade.Material]:
+        """Creates or retrieves a SessionLayer material for the specified color."""
+        if not stage:
+            return None
+        session_layer = stage.GetSessionLayer()
+        if not session_layer:
+            return None
+
+        r_int = int(round(color_vec[0] * 255))
+        g_int = int(round(color_vec[1] * 255))
+        b_int = int(round(color_vec[2] * 255))
+        mat_name = f"InjectedMat_{r_int:02X}{g_int:02X}{b_int:02X}"
+        mat_path = f"/World/Looks/{mat_name}"
+
+        with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+            mat_prim = stage.GetPrimAtPath(mat_path)
+            if mat_prim.IsValid():
+                return UsdShade.Material(mat_prim)
+
+            material = UsdShade.Material.Define(stage, mat_path)
+
+            # UsdPreviewSurface Shader
+            shader_path = f"{mat_path}/Shader"
+            shader = UsdShade.Shader.Define(stage, shader_path)
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color_vec)
+            shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color_vec * 0.3)
+            shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+            # MDL OmniPBR Shader (RTX Real-Time)
+            try:
+                mdl_shader = UsdShade.Shader.Define(stage, f"{mat_path}/OmniPBR")
+                mdl_shader.SetSourceAsset("OmniPBR.mdl", "mdl")
+                mdl_shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+                mdl_shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(color_vec)
+                material.CreateSurfaceOutput("mdl").ConnectToSource(mdl_shader.ConnectableAPI(), "out")
+            except Exception:
+                pass
+
+            return material
+
+    def set_color(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        color: Union[str, Tuple[float, float, float], List[float]]
+    ) -> bool:
+        """
+        Injects color into the specified prim and all its mesh descendants on SessionLayer.
+        Preserves original colors for restoration on exit.
+        """
+        if not stage or not prim_path:
+            return False
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return False
+
+        color_vec = self.parse_color(color)
+        session_layer = stage.GetSessionLayer()
+        if not session_layer:
+            return False
+
+        material = self._get_or_create_material(stage, color_vec)
+
+        with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+            for child in Usd.PrimRange(prim):
+                if not child.IsValid():
+                    continue
+
+                c_path = str(child.GetPath())
+
+                # Record original state if not yet recorded
+                if c_path not in self._original_colors:
+                    orig_state = {}
+                    if child.IsA(UsdGeom.Gprim):
+                        gprim = UsdGeom.Gprim(child)
+                        color_attr = gprim.GetDisplayColorAttr()
+                        if color_attr and color_attr.IsValid():
+                            orig_state["display_color"] = color_attr.Get()
+                    binding_api = UsdShade.MaterialBindingAPI(child)
+                    direct_binding = binding_api.GetDirectBinding()
+                    if direct_binding and direct_binding.GetMaterial():
+                        orig_state["material_path"] = str(direct_binding.GetMaterial().GetPath())
+                    self._original_colors[c_path] = orig_state
+
+                # Apply displayColor attribute on SessionLayer
+                if child.IsA(UsdGeom.Gprim):
+                    gprim = UsdGeom.Gprim(child)
+                    gprim.CreateDisplayColorAttr().Set([color_vec])
+
+                # Bind SessionLayer material if available
+                if material:
+                    try:
+                        api = (
+                            UsdShade.MaterialBindingAPI.Apply(child)
+                            if hasattr(UsdShade.MaterialBindingAPI, "Apply")
+                            else UsdShade.MaterialBindingAPI(child)
+                        )
+                        api.Bind(material, UsdShade.Tokens.strongerThanDescendants, "")
+                        api.Bind(material, UsdShade.Tokens.strongerThanDescendants, "preview")
+                    except Exception:
+                        pass
+
+        return True
+
+    def set_colors(
+        self,
+        stage: Usd.Stage,
+        mapping: Dict[str, Union[str, Tuple[float, float, float], List[float]]]
+    ) -> None:
+        """
+        Batch injection of colors: { prim_path: color_value }
+        """
+        for prim_path, color_value in mapping.items():
+            self.set_color(stage, prim_path, color_value)
+
+    def restore_all_colors(self, stage: Usd.Stage) -> None:
+        """
+        Restores all modified prims to their original state and clears SessionLayer overrides.
+        """
+        if not stage or not self._original_colors:
+            return
+
+        session_layer = stage.GetSessionLayer()
+        if not session_layer:
+            return
+
+        with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+            for c_path, orig_state in self._original_colors.items():
+                child = stage.GetPrimAtPath(c_path)
+                if not child or not child.IsValid():
+                    continue
+
+                if child.IsA(UsdGeom.Gprim):
+                    gprim = UsdGeom.Gprim(child)
+                    color_attr = gprim.GetDisplayColorAttr()
+                    if color_attr and color_attr.IsValid():
+                        if "display_color" in orig_state and orig_state["display_color"] is not None:
+                            color_attr.Set(orig_state["display_color"])
+                        else:
+                            color_attr.Clear()
+
+                try:
+                    UsdShade.MaterialBindingAPI(child).UnbindAllBindings()
+                except Exception:
+                    pass
+
+                if "material_path" in orig_state and orig_state["material_path"]:
+                    orig_mat_prim = stage.GetPrimAtPath(orig_state["material_path"])
+                    if orig_mat_prim and orig_mat_prim.IsValid():
+                        try:
+                            orig_mat = UsdShade.Material(orig_mat_prim)
+                            UsdShade.MaterialBindingAPI(child).Bind(orig_mat)
+                        except Exception:
+                            pass
+
+        self._original_colors.clear()

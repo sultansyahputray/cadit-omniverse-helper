@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+NavigationContext encapsulates state, history, and metadata passed between levels during navigation.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List
+
+
+@dataclass
+class NavigationContext:
+    """State and payload transferred across level transitions."""
+    current_level: str
+    selected_item_id: Optional[str] = None
+    previous_level: Optional[str] = None
+    history: List[str] = field(default_factory=list)
+    extra_data: Dict[str, Any] = field(default_factory=dict)
+
+    def push_history(self, level_id: str) -> None:
+        """Appends the current level to navigation history."""
+        if level_id and (not self.history or self.history[-1] != level_id):
+            self.history.append(level_id)
+
+    def pop_history(self) -> Optional[str]:
+        """Pops and returns the previous level from history."""
+        if self.history:
+            return self.history.pop()
+        return None
+
+    def reset(self, initial_level: str) -> None:
+        """Resets context to an initial level state."""
+        self.current_level = initial_level
+        self.selected_item_id = None
+        self.previous_level = None
+        self.history.clear()
+        self.extra_data.clear()

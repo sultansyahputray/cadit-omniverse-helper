@@ -1,0 +1,167 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+LevelManager Orchestrator:
+Handles dynamic auto-discovery of levels, asynchronous USD stage switching per level,
+navigation state tracking, and 60 FPS update dispatching.
+"""
+
+import os
+import sys
+import inspect
+import importlib
+import asyncio
+from typing import Dict, Optional, Any
+from pxr import Usd
+
+import omni.usd
+
+from .context import NavigationContext
+from .base_level import BaseLevelHandler
+
+
+class LevelManager:
+    """Central Orchestrator for Multi-Level Navigation."""
+
+    def __init__(self):
+        self._handlers: Dict[str, BaseLevelHandler] = {}
+        self._active_level_id: Optional[str] = None
+        self._context: NavigationContext = NavigationContext(current_level="uninitialized")
+        self._is_transitioning: bool = False
+        self._auto_discover_levels()
+
+    @property
+    def active_level(self) -> Optional[BaseLevelHandler]:
+        if self._active_level_id and self._active_level_id in self._handlers:
+            return self._handlers[self._active_level_id]
+        return None
+
+    @property
+    def context(self) -> NavigationContext:
+        return self._context
+
+    def _auto_discover_levels(self) -> None:
+        """Scans the levels package and registers all BaseLevelHandler subclasses."""
+        try:
+            parent_pkg = __package__.rsplit(".", 1)[0] if "." in __package__ else ""
+            levels_pkg_name = f"{parent_pkg}.levels" if parent_pkg else "levels"
+
+            core_dir = os.path.dirname(__file__)
+            ext_dir = os.path.dirname(core_dir)
+            levels_dir = os.path.join(ext_dir, "levels")
+
+            if not os.path.isdir(levels_dir):
+                print(f"[LevelManager] Levels directory not found at: {levels_dir}")
+                return
+
+            # Ensure levels package is imported
+            try:
+                importlib.import_module(levels_pkg_name)
+            except Exception as e:
+                print(f"[LevelManager] Note importing '{levels_pkg_name}': {e}")
+
+            for fname in sorted(os.listdir(levels_dir)):
+                if fname.startswith("level_") and fname.endswith(".py"):
+                    mod_name = fname[:-3]
+                    full_mod_name = f"{levels_pkg_name}.{mod_name}"
+                    try:
+                        mod = importlib.import_module(full_mod_name)
+                        for attr_name in dir(mod):
+                            attr = getattr(mod, attr_name)
+                            if (inspect.isclass(attr) and
+                                issubclass(attr, BaseLevelHandler) and
+                                attr is not BaseLevelHandler):
+                                handler_instance = attr(self)
+                                lvl_id = handler_instance.level_id
+                                self._handlers[lvl_id] = handler_instance
+                                print(f"[LevelManager] Registered level '{lvl_id}' ({handler_instance.display_name})")
+                    except Exception as err:
+                        print(f"[LevelManager] Error loading level module '{full_mod_name}': {err}")
+
+        except Exception as e:
+            print(f"[LevelManager] Level auto-discovery failed: {e}")
+
+    def get_registered_levels(self) -> Dict[str, str]:
+        """Returns {level_id: display_name} of all registered levels."""
+        return {lvl_id: handler.display_name for lvl_id, handler in self._handlers.items()}
+
+    def navigate_to(self, target_level_id: str, item_id: Optional[str] = None, **extra_data) -> bool:
+        """Requests level transition. Executes synchronously or schedules async stage switch."""
+        if target_level_id not in self._handlers:
+            print(f"[LevelManager] Navigate failed: Unknown level '{target_level_id}'")
+            return False
+
+        if self._is_transitioning:
+            print(f"[LevelManager] Transition in progress. Rejecting navigation to '{target_level_id}'")
+            return False
+
+        # Schedule execution on asyncio event loop
+        asyncio.ensure_future(self._execute_transition(target_level_id, item_id, extra_data))
+        return True
+
+    async def _execute_transition(self, target_level_id: str, item_id: Optional[str], extra_data: dict) -> None:
+        self._is_transitioning = True
+        try:
+            usd_context = omni.usd.get_context()
+            stage = usd_context.get_stage() if usd_context else None
+
+            # 1. Exit current active level
+            last_state = {}
+            if self.active_level:
+                try:
+                    last_state = self.active_level.on_exit(stage, target_level_id) or {}
+                except Exception as e:
+                    print(f"[LevelManager] Error during on_exit for '{self._active_level_id}': {e}")
+
+            # Update context
+            prev_id = self._active_level_id
+            self._context.push_history(prev_id)
+            self._context.previous_level = prev_id
+            self._context.current_level = target_level_id
+            self._context.selected_item_id = item_id
+            self._context.extra_data.update(extra_data)
+            if last_state:
+                self._context.extra_data["last_level_state"] = last_state
+
+            next_handler = self._handlers[target_level_id]
+
+            # 2. Check Dynamic Map Switcher
+            if next_handler.map_url:
+                current_url = usd_context.get_stage_url() if usd_context else None
+                if current_url != next_handler.map_url:
+                    print(f"[LevelManager] Loading stage for '{target_level_id}': {next_handler.map_url}")
+                    await usd_context.open_stage_async(next_handler.map_url)
+                    stage = usd_context.get_stage()
+
+            # 3. Enter new level
+            self._active_level_id = target_level_id
+            try:
+                next_handler.on_enter(stage, self._context)
+                print(f"[LevelManager] Successfully navigated to '{target_level_id}'")
+            except Exception as e:
+                print(f"[LevelManager] Error during on_enter for '{target_level_id}': {e}")
+
+        finally:
+            self._is_transitioning = False
+
+    def on_update(self, dt: float) -> None:
+        """Called every frame by the extension update event stream."""
+        if self._is_transitioning:
+            return
+
+        if self.active_level:
+            stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+            try:
+                self.active_level.on_update(stage, dt)
+            except Exception as e:
+                pass
+
+    def on_shutdown(self) -> None:
+        """Cleans up active level and managers on extension shutdown."""
+        stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+        if self.active_level:
+            try:
+                self.active_level.on_exit(stage, "shutdown")
+            except Exception:
+                pass
+        self._handlers.clear()
+        self._active_level_id = None

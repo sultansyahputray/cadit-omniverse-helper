@@ -1,0 +1,170 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+VisibilityHelper Engine:
+Provides static hiding and dynamic perspective cutaway mechanisms for USD geometry.
+Automatically restores visibility state upon level exit without mutating USD master files.
+"""
+
+import math
+from typing import List, Dict, Tuple, Optional, Any
+from pxr import Usd, UsdGeom, Gf
+
+
+class VisibilityHelper:
+    """Non-destructive USD prim visibility and perspective cutaway manager."""
+
+    def __init__(self):
+        self._hidden_prims: List[str] = []
+        self._registered_cutaway_walls: Dict[str, Dict[str, Any]] = {}
+        self._cached_wall_normals: Dict[str, Tuple[float, float]] = {}
+        self._last_cutaway_dir: Optional[Tuple[float, float]] = None
+
+    def hide_objects(self, stage: Usd.Stage, prim_paths: List[str]) -> None:
+        """
+        Hides prims statically and records them for clean restoration on exit.
+        """
+        if not stage:
+            return
+        for path_str in prim_paths:
+            prim = stage.GetPrimAtPath(path_str)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeInvisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeInvisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.invisible)
+                if path_str not in self._hidden_prims:
+                    self._hidden_prims.append(path_str)
+
+    def show_objects(self, stage: Usd.Stage, prim_paths: List[str]) -> None:
+        """
+        Makes prims visible and removes them from the hidden tracking list.
+        """
+        if not stage:
+            return
+        for path_str in prim_paths:
+            prim = stage.GetPrimAtPath(path_str)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeVisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.inherited)
+                if path_str in self._hidden_prims:
+                    self._hidden_prims.remove(path_str)
+
+    def register_cutaway_walls(self, walls_config: Dict[str, Dict[str, Any]]) -> None:
+        """
+        Registers walls for dynamic perspective cutaway.
+        Example configuration:
+        {
+            "front_wall": {"path": "/World/Building/Wall_Front", "normal": (0.0, 1.0)},
+            "back_wall":  {"path": "/World/Building/Wall_Back",  "normal": (0.0, -1.0)},
+            "left_wall":  {"path": "/World/Building/Wall_Left",  "normal": (-1.0, 0.0)},
+            "right_wall": {"path": "/World/Building/Wall_Right", "normal": (1.0, 0.0)}
+        }
+        """
+        self._registered_cutaway_walls = walls_config or {}
+        self._cached_wall_normals.clear()
+        for name, data in self._registered_cutaway_walls.items():
+            normal = data.get("normal", (0.0, 1.0))
+            self._cached_wall_normals[name] = (float(normal[0]), float(normal[1]))
+
+    def update_perspective_cutaway(
+        self,
+        stage: Usd.Stage,
+        cam_pos: Optional[Gf.Vec3d] = None,
+        center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        dot_threshold: float = 0.15
+    ) -> None:
+        """
+        Dynamically peels walls that face the camera on 60 FPS update loop.
+        """
+        if not stage or not self._registered_cutaway_walls:
+            return
+
+        if cam_pos is None:
+            return
+
+        # Vector from target center to camera on horizontal ground plane (X, Z)
+        dx = cam_pos[0] - center[0]
+        dz = cam_pos[2] - center[2]
+        dist_xz = math.hypot(dx, dz)
+        if dist_xz < 1e-3:
+            return
+
+        dir_x = dx / dist_xz
+        dir_z = dz / dist_xz
+
+        for wall_name, wall_info in self._registered_cutaway_walls.items():
+            path_str = wall_info.get("path")
+            if not path_str:
+                continue
+            prim = stage.GetPrimAtPath(path_str)
+            if not prim or not prim.IsValid():
+                continue
+
+            normal = self._cached_wall_normals.get(wall_name, (0.0, 1.0))
+            dot = dir_x * normal[0] + dir_z * normal[1]
+
+            imageable = UsdGeom.Imageable(prim)
+            if dot > dot_threshold:
+                # Facing camera: hide wall
+                imageable.MakeInvisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeInvisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.invisible)
+            else:
+                # Away from camera: restore wall
+                imageable.MakeVisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeVisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.inherited)
+
+    def restore_all_visibility(self, stage: Usd.Stage) -> None:
+        """
+        Restores all hidden prims and cutaway walls back to visible / inherited.
+        Guarantees USD master files remain intact on level transition.
+        """
+        if not stage:
+            return
+
+        # 1. Restore static hidden prims
+        for path_str in list(self._hidden_prims):
+            prim = stage.GetPrimAtPath(path_str)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeVisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.inherited)
+        self._hidden_prims.clear()
+
+        # 2. Restore all registered cutaway walls
+        for wall_info in self._registered_cutaway_walls.values():
+            path_str = wall_info.get("path")
+            if not path_str:
+                continue
+            prim = stage.GetPrimAtPath(path_str)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Imageable):
+                UsdGeom.Imageable(prim).MakeVisible()
+                for child in Usd.PrimRange(prim):
+                    if child.IsValid() and child.IsA(UsdGeom.Imageable):
+                        UsdGeom.Imageable(child).MakeVisible()
+                        vis_attr = child.GetAttribute("visibility")
+                        if vis_attr and vis_attr.IsValid():
+                            vis_attr.Set(UsdGeom.Tokens.inherited)
+        self._registered_cutaway_walls.clear()
+        self._cached_wall_normals.clear()

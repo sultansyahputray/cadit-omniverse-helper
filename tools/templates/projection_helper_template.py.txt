@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+ProjectionHelper Engine:
+Computes 2D screen coordinates (0% to 100% viewport X/Y) for tracked 3D USD prims.
+Equipped with dirty-check caching (0% CPU when camera still) and automatic camera clipping.
+"""
+
+from typing import Dict, Any, Optional
+from pxr import Usd, UsdGeom, Gf
+
+try:
+    import omni.kit.viewport.utility as vp_utils
+except ImportError:
+    vp_utils = None
+
+
+class ProjectionHelper:
+    """3D Frustum-to-2D Screen Space Projection Engine."""
+
+    def __init__(self):
+        self._last_cam_matrix: Optional[Gf.Matrix4d] = None
+        self._last_aspect: Optional[float] = None
+        self._cached_screen_positions: Dict[str, Dict[str, Any]] = {}
+        self._cached_midpoints_3d: Dict[str, Gf.Vec3d] = {}
+
+    def clear_projection_cache(self) -> None:
+        """Clears all cached 3D and 2D positions."""
+        self._last_cam_matrix = None
+        self._last_aspect = None
+        self._cached_screen_positions.clear()
+        self._cached_midpoints_3d.clear()
+
+    def get_active_camera_prim(self, stage: Usd.Stage) -> Optional[Usd.Prim]:
+        """Resolves the currently active viewport camera prim."""
+        if not stage:
+            return None
+
+        # Strategy 1: Active Viewport utility
+        if vp_utils:
+            try:
+                v_api = vp_utils.get_active_viewport()
+                if v_api and hasattr(v_api, "camera_path") and v_api.camera_path:
+                    prim = stage.GetPrimAtPath(str(v_api.camera_path))
+                    if prim and prim.IsValid():
+                        return prim
+            except Exception:
+                pass
+
+        # Strategy 2: Common viewport fallback paths
+        for cam_path in ["/OmniverseKit_Persp", "/World/Camera", "/Camera"]:
+            prim = stage.GetPrimAtPath(cam_path)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Camera):
+                return prim
+
+        return None
+
+    def get_viewport_aspect_ratio(self) -> float:
+        """Retrieves active viewport aspect ratio with fallback to 16:9."""
+        if vp_utils:
+            try:
+                v_api = vp_utils.get_active_viewport()
+                if v_api:
+                    res = getattr(v_api, "resolution", None)
+                    if callable(res):
+                        res = res()
+                    if res and len(res) >= 2 and res[1] > 0:
+                        aspect = float(res[0]) / float(res[1])
+                        if 0.2 < aspect < 5.0:
+                            return aspect
+            except Exception:
+                pass
+        return 16.0 / 9.0
+
+    def compute_screen_positions(
+        self,
+        stage: Usd.Stage,
+        tracked_prims: Dict[str, str],
+        client_aspect: Optional[float] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Computes 2D screen positions for all tracked USD prims.
+        Returns:
+            {
+                "object_key": {
+                    "x": 48.5,        # 0.0% to 100.0% from left
+                    "y": 55.2,        # 0.0% to 100.0% from top
+                    "visible": True,  # False if behind camera or outside frustum
+                    "depth": 120.4    # Camera depth distance
+                }
+            }
+        """
+        if not stage or not tracked_prims:
+            return {}
+
+        cam_prim = self.get_active_camera_prim(stage)
+        if not cam_prim or not cam_prim.IsValid():
+            return self._cached_screen_positions
+
+        try:
+            usd_geom_cam = UsdGeom.Camera(cam_prim)
+            gf_cam = usd_geom_cam.GetCamera(Usd.TimeCode.Default())
+            cam_xform = UsdGeom.Xformable(cam_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            gf_cam.transform = cam_xform
+
+            viewport_aspect = client_aspect if (client_aspect and client_aspect > 0.2) else self.get_viewport_aspect_ratio()
+
+            # Dirty-Check: return cached result if camera transform & aspect have not changed
+            if (self._last_cam_matrix == cam_xform and
+                self._last_aspect is not None and
+                abs(self._last_aspect - viewport_aspect) < 1e-4 and
+                self._cached_screen_positions):
+                return self._cached_screen_positions
+
+            self._last_cam_matrix = cam_xform
+            self._last_aspect = viewport_aspect
+
+            # Framing policy: adapt horizontal aperture based on aspect
+            vert_ap = gf_cam.verticalAperture
+            if vert_ap <= 0:
+                vert_ap = 15.2908
+            gf_cam.horizontalAperture = vert_ap * viewport_aspect
+
+            frustum = gf_cam.frustum
+            view_proj = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix()
+
+            bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+            positions: Dict[str, Dict[str, Any]] = {}
+
+            for key, prim_path in tracked_prims.items():
+                if key not in self._cached_midpoints_3d:
+                    prim = stage.GetPrimAtPath(prim_path)
+                    if prim and prim.IsValid():
+                        bound = bbox_cache.ComputeWorldBound(prim)
+                        rng = bound.ComputeAlignedRange()
+                        if not rng.IsEmpty():
+                            self._cached_midpoints_3d[key] = rng.GetMidpoint()
+
+                pt_3d = self._cached_midpoints_3d.get(key)
+                if not pt_3d:
+                    continue
+
+                pt_clip = Gf.Vec4d(pt_3d[0], pt_3d[1], pt_3d[2], 1.0) * view_proj
+
+                # Behind camera clipping:
+                if pt_clip[3] <= 1e-4:
+                    positions[key] = {
+                        "x": 50.0,
+                        "y": 50.0,
+                        "visible": False,
+                        "depth": round(float(pt_clip[3]), 2)
+                    }
+                    continue
+
+                ndc_x = pt_clip[0] / pt_clip[3]
+                ndc_y = pt_clip[1] / pt_clip[3]
+                screen_x = round(((ndc_x + 1.0) / 2.0) * 100.0, 2)
+                screen_y = round(((1.0 - ndc_y) / 2.0) * 100.0, 2)
+
+                is_inside = (0.0 <= screen_x <= 100.0) and (0.0 <= screen_y <= 100.0)
+                positions[key] = {
+                    "x": screen_x,
+                    "y": screen_y,
+                    "visible": bool(is_inside),
+                    "depth": round(float(pt_clip[3]), 2)
+                }
+
+            self._cached_screen_positions = positions
+            return positions
+
+        except Exception as e:
+            print(f"[ProjectionHelper] Projection calculation error: {e}")
+            return self._cached_screen_positions

@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+BaseLevelHandler Abstract Contract:
+Inherits and exposes all four core helper engines:
+1. VisibilityHelper (hide_objects, dynamic cutaways, restore_all_visibility)
+2. ProjectionHelper (frustum math, screen positions, dirty check)
+3. ColorHelper (unopinionated color injection, restore_all_colors)
+4. CameraHelper (orbit pivot locked to 0,0,0, ViewCube presets, zoom)
+"""
+
+from abc import ABC, abstractmethod
+from typing import Dict, Any, Optional
+from pxr import Usd
+
+from .context import NavigationContext
+from .helpers.visibility_helper import VisibilityHelper
+from .helpers.projection_helper import ProjectionHelper
+from .helpers.color_helper import ColorHelper
+from .helpers.camera_helper import CameraHelper
+
+
+class BaseLevelHandler(ABC):
+    """Abstract Base Class for modular level handlers."""
+
+    level_id: str = "base_level"
+    display_name: str = "Base Level"
+
+    # [OPTIONAL] USD map stage path if this level uses a distinct USD file:
+    map_url: Optional[str] = None
+
+    # [OPTIONAL] Root prim path for this level:
+    root_prim_path: str = "/World"
+
+    # [OPTIONAL] Prims tracked for 2D Web Dashboard projection:
+    tracked_objects: Dict[str, str] = {}
+
+    def __init__(self, manager):
+        self.manager = manager
+        self.visibility_helper = VisibilityHelper()
+        self.projection_helper = ProjectionHelper()
+        self.color_helper = ColorHelper()
+        self.camera_helper = CameraHelper()
+
+    # --- Delegated Visibility Methods ---
+    def hide_objects(self, stage: Usd.Stage, prim_paths: list) -> None:
+        self.visibility_helper.hide_objects(stage, prim_paths)
+
+    def show_objects(self, stage: Usd.Stage, prim_paths: list) -> None:
+        self.visibility_helper.show_objects(stage, prim_paths)
+
+    def register_cutaway_walls(self, walls_config: dict) -> None:
+        self.visibility_helper.register_cutaway_walls(walls_config)
+
+    def update_perspective_cutaway(self, stage: Usd.Stage, cam_pos=None, center=(0.0, 0.0, 0.0), dot_threshold=0.15) -> None:
+        self.visibility_helper.update_perspective_cutaway(stage, cam_pos, center, dot_threshold)
+
+    def restore_all_visibility(self, stage: Usd.Stage) -> None:
+        self.visibility_helper.restore_all_visibility(stage)
+
+    # --- Delegated Projection Methods ---
+    def get_tracked_screen_positions(self, stage: Usd.Stage, client_aspect=None) -> Dict[str, Dict[str, Any]]:
+        return self.projection_helper.compute_screen_positions(stage, self.tracked_objects, client_aspect)
+
+    def clear_projection_cache(self) -> None:
+        self.projection_helper.clear_projection_cache()
+
+    # --- Delegated Color Methods ---
+    def set_color(self, stage: Usd.Stage, prim_path: str, color: Any) -> bool:
+        return self.color_helper.set_color(stage, prim_path, color)
+
+    def set_colors(self, stage: Usd.Stage, mapping: dict) -> None:
+        self.color_helper.set_colors(stage, mapping)
+
+    def restore_all_colors(self, stage: Usd.Stage) -> None:
+        self.color_helper.restore_all_colors(stage)
+
+    # --- Delegated Camera Methods ---
+    def set_camera_pivot(self, stage: Usd.Stage, pivot_point=(0.0, 0.0, 0.0), distance=1000.0) -> None:
+        self.camera_helper.set_camera_pivot(stage, pivot_point, distance)
+
+    def set_camera_pivot_to_object(self, stage: Usd.Stage, prim_path: str, distance=None) -> bool:
+        return self.camera_helper.set_camera_pivot_to_object(stage, prim_path, distance)
+
+    def reset_camera_pivot(self, stage: Usd.Stage) -> None:
+        self.camera_helper.reset_camera_pivot(stage)
+
+    def set_camera_view(self, stage: Usd.Stage, view_name: str) -> bool:
+        return self.camera_helper.set_camera_view(stage, view_name)
+
+    def camera_zoom_in(self, stage: Usd.Stage, factor=0.8) -> None:
+        self.camera_helper.camera_zoom_in(stage, factor)
+
+    def camera_zoom_out(self, stage: Usd.Stage, factor=1.25) -> None:
+        self.camera_helper.camera_zoom_out(stage, factor)
+
+    def zoom_to_fit_object(self, stage: Usd.Stage, prim_path: str) -> bool:
+        return self.camera_helper.zoom_to_fit_object(stage, prim_path)
+
+    # --- Navigation Request ---
+    def request_navigate(self, target_level_id: str, item_id: Optional[str] = None, **extra_data) -> bool:
+        """Requests LevelManager to switch to target_level_id."""
+        if self.manager:
+            return self.manager.navigate_to(target_level_id, item_id, **extra_data)
+        return False
+
+    # --- Lifecycle Hooks ---
+    @abstractmethod
+    def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
+        """Called immediately when entering this level and USD stage is ready."""
+        pass
+
+    @abstractmethod
+    def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
+        """Called when leaving this level. Must clean up overrides and return state dict."""
+        pass
+
+    def on_update(self, stage: Usd.Stage, dt: float) -> None:
+        """Called every frame during update stream (e.g. 60 FPS)."""
+        pass

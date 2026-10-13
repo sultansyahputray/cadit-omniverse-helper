@@ -1,0 +1,217 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+CameraHelper Engine:
+Controls viewport camera navigation, locking orbit pivot to (0,0,0) or object bounding boxes.
+Disables erratic mouse tumble, provides ViewCube presets (iso, top, front, etc.),
+and provides gradual zoom and zoom-to-fit controls.
+"""
+
+from typing import Optional, Tuple, Dict, Any, Union
+from pxr import Usd, UsdGeom, Sdf, Gf
+
+try:
+    import carb.settings
+except ImportError:
+    carb = None
+
+try:
+    import omni.kit.viewport.utility as vp_utils
+except ImportError:
+    vp_utils = None
+
+
+VIEWCUBE_DIRECTIONS = {
+    "iso":    Gf.Vec3d(1.0, 1.0, 1.0).GetNormalized(),
+    "top":    Gf.Vec3d(0.0001, 1.0, 0.0001).GetNormalized(),
+    "bottom": Gf.Vec3d(0.0001, -1.0, 0.0001).GetNormalized(),
+    "front":  Gf.Vec3d(0.0, 0.2, 1.0).GetNormalized(),
+    "back":   Gf.Vec3d(0.0, 0.2, -1.0).GetNormalized(),
+    "left":   Gf.Vec3d(-1.0, 0.2, 0.0).GetNormalized(),
+    "right":  Gf.Vec3d(1.0, 0.2, 0.0).GetNormalized(),
+}
+
+
+class CameraHelper:
+    """Orbit Pivot, ViewCube Presets, and Zoom Navigation Engine."""
+
+    def __init__(self):
+        self._current_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._current_distance: float = 1000.0
+        self._current_view_direction: Gf.Vec3d = VIEWCUBE_DIRECTIONS["iso"]
+        self._disable_cursor_tumble()
+
+    def _disable_cursor_tumble(self) -> None:
+        """Disables erratic Kit tumble-at-cursor behavior to maintain stable orbit pivots."""
+        if carb:
+            try:
+                settings = carb.settings.get_settings()
+                if settings:
+                    settings.set("/app/viewport/camera/tumbleAtCursor", False)
+                    settings.set("/persistent/app/viewport/camera/tumbleAtCursor", False)
+            except Exception:
+                pass
+
+    def get_active_camera_prim(self, stage: Usd.Stage) -> Optional[Usd.Prim]:
+        """Resolves active viewport camera prim."""
+        if not stage:
+            return None
+        if vp_utils:
+            try:
+                v_api = vp_utils.get_active_viewport()
+                if v_api and hasattr(v_api, "camera_path") and v_api.camera_path:
+                    prim = stage.GetPrimAtPath(str(v_api.camera_path))
+                    if prim and prim.IsValid():
+                        return prim
+            except Exception:
+                pass
+
+        for cam_path in ["/OmniverseKit_Persp", "/World/Camera", "/Camera"]:
+            prim = stage.GetPrimAtPath(cam_path)
+            if prim and prim.IsValid():
+                return prim
+        return None
+
+    def _apply_pose(self, stage: Usd.Stage, cam_pos: Gf.Vec3d, look_at: Gf.Vec3d, distance: float) -> None:
+        """Calculates LookAt transform and applies pose and centerOfInterest attribute to camera prim."""
+        cam_prim = self.get_active_camera_prim(stage)
+        if not cam_prim or not cam_prim.IsValid():
+            return
+
+        up = Gf.Vec3d(0.0, 1.0, 0.0)
+        view_dir = (look_at - cam_pos).GetNormalized()
+        if abs(Gf.Dot(view_dir, up)) > 0.999:
+            up = Gf.Vec3d(0.0, 0.0, -1.0) if view_dir[1] > 0 else Gf.Vec3d(0.0, 0.0, 1.0)
+
+        rot_mat = Gf.Matrix4d().SetLookAt(cam_pos, look_at, up)
+        cam_mat = rot_mat.GetInverse()
+
+        session_layer = stage.GetSessionLayer()
+        layers_to_edit = [session_layer] if session_layer else []
+        root_layer = stage.GetRootLayer()
+        if root_layer and root_layer not in layers_to_edit:
+            layers_to_edit.append(root_layer)
+
+        for layer in layers_to_edit:
+            with Usd.EditContext(stage, Usd.EditTarget(layer)):
+                xformable = UsdGeom.Xformable(cam_prim)
+                xform_op = None
+                for op in xformable.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
+                        xform_op = op
+                        break
+                if not xform_op:
+                    xform_op = xformable.AddTransformOp()
+                xform_op.Set(cam_mat)
+
+                cam_api = UsdGeom.Camera(cam_prim)
+                cam_api.CreateFocusDistanceAttr().Set(distance)
+
+                coi_attr = cam_prim.GetAttribute("omni:kit:centerOfInterest")
+                if not coi_attr or not coi_attr.IsValid():
+                    coi_attr = cam_prim.CreateAttribute(
+                        "omni:kit:centerOfInterest",
+                        Sdf.ValueTypeNames.Vector3d,
+                        True,
+                        Sdf.VariabilityUniform
+                    )
+                coi_attr.Set(Gf.Vec3d(0.0, 0.0, -distance))
+
+    def set_camera_pivot(
+        self,
+        stage: Usd.Stage,
+        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
+        distance: float = 1000.0
+    ) -> None:
+        """
+        Sets the camera orbit pivot point and positions the camera at the given distance.
+        """
+        self._disable_cursor_tumble()
+        self._current_pivot = Gf.Vec3d(pivot_point[0], pivot_point[1], pivot_point[2])
+        self._current_distance = max(1.0, float(distance))
+
+        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+
+    def set_camera_pivot_to_object(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        distance: Optional[float] = None
+    ) -> bool:
+        """
+        Moves orbit pivot to the center of the target object's bounding box.
+        """
+        if not stage or not prim_path:
+            return False
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return False
+
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        bound = bbox_cache.ComputeWorldBound(prim)
+        rng = bound.ComputeAlignedRange()
+        if rng.IsEmpty():
+            return False
+
+        mid = rng.GetMidpoint()
+        target_dist = distance if distance is not None else max(100.0, (rng.GetMax() - rng.GetMin()).GetLength() * 1.5)
+        self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist)
+        return True
+
+    def reset_camera_pivot(self, stage: Usd.Stage) -> None:
+        """Resets camera pivot back to the global origin (0, 0, 0)."""
+        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=self._current_distance)
+
+    def set_camera_view(self, stage: Usd.Stage, view_name: str) -> bool:
+        """
+        Rotates camera to standard dice presets ('iso', 'top', 'front', 'back', 'left', 'right', 'bottom').
+        Preserves current pivot point and distance.
+        """
+        key = (view_name or "iso").strip().lower()
+        if key not in VIEWCUBE_DIRECTIONS:
+            return False
+
+        self._current_view_direction = VIEWCUBE_DIRECTIONS[key]
+        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        return True
+
+    def camera_zoom_in(self, stage: Usd.Stage, factor: float = 0.8) -> None:
+        """Zooms camera in toward the active pivot point."""
+        self._current_distance = max(10.0, self._current_distance * factor)
+        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+
+    def camera_zoom_out(self, stage: Usd.Stage, factor: float = 1.25) -> None:
+        """Zooms camera out away from the active pivot point."""
+        self._current_distance = max(10.0, self._current_distance * factor)
+        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+
+    def set_camera_distance(self, stage: Usd.Stage, distance: float) -> None:
+        """Sets an exact distance from the camera to the active pivot."""
+        self._current_distance = max(10.0, float(distance))
+        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+
+    def zoom_to_fit_object(self, stage: Usd.Stage, prim_path: str) -> bool:
+        """Fits camera framing snugly around the target object's bounding box."""
+        if not stage or not prim_path:
+            return False
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return False
+
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        bound = bbox_cache.ComputeWorldBound(prim)
+        rng = bound.ComputeAlignedRange()
+        if rng.IsEmpty():
+            return False
+
+        mid = rng.GetMidpoint()
+        size = (rng.GetMax() - rng.GetMin()).GetLength()
+        optimal_dist = max(50.0, size * 1.8)
+        self.set_camera_pivot(stage, pivot_point=mid, distance=optimal_dist)
+        return True
