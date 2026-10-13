@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+SelectionHelper Engine:
+Manages 3D viewport prim selection, enforces strict single-selection (clearing previous
+selected prims on every click), tracks active selected prim, and dispatches callbacks to active level.
+"""
+
+from typing import Optional, List, Set, Any
+from pxr import Usd, Sdf
+
+try:
+    import omni.usd
+except ImportError:
+    omni_usd = None
+
+
+class SelectionHelper:
+    """Manages viewport prim selection, single-selection enforcement, and level notifications."""
+
+    def __init__(self, manager=None):
+        self.manager = manager
+        self.saved_selected_prim: Optional[str] = None
+        self.previous_selection_set: Set[str] = set()
+        self.is_enforcing_selection: bool = False
+        self._stage_event_sub = None
+        self._init_stage_listener()
+
+    def _init_stage_listener(self) -> None:
+        """Subscribes to StageEventType.SELECTION_CHANGED to enforce single selection."""
+        try:
+            usd_context = omni.usd.get_context()
+            if usd_context:
+                self._stage_event_sub = usd_context.get_stage_event_stream().create_subscription_to_pop(
+                    self._on_stage_event, name="cadit_selection_helper_event"
+                )
+        except Exception as e:
+            print(f"[SelectionHelper] Stage event subscription note: {e}")
+
+    def _on_stage_event(self, event) -> None:
+        if event.type == int(omni.usd.StageEventType.SELECTION_CHANGED):
+            self.enforce_single_selection()
+
+    def enforce_single_selection(self, stage: Optional[Usd.Stage] = None) -> None:
+        """
+        Enforces single object selection across the entire 3D viewport.
+        Clears/resets previous selection on each click so objects are never multi-selected.
+        """
+        if self.is_enforcing_selection:
+            return
+
+        try:
+            usd_context = omni.usd.get_context()
+            if not usd_context:
+                return
+            selection = usd_context.get_selection()
+            if not selection:
+                return
+
+            current_paths = selection.get_selected_prim_paths()
+            if not current_paths:
+                self.previous_selection_set = set()
+                self.saved_selected_prim = None
+                self._notify_level(stage or usd_context.get_stage(), None)
+                return
+
+            current_set = set(current_paths)
+            prev_set = self.previous_selection_set
+
+            # If selection hasn't changed and is already a single object, no action needed
+            if current_set == prev_set and len(current_paths) <= 1:
+                return
+
+            # 1. Simpan objek yang baru di-click ke dalam memory sementara
+            new_items = [p for p in current_paths if p not in prev_set]
+            saved_target_id = new_items[-1] if new_items else current_paths[-1]
+            self.saved_selected_prim = saved_target_id
+
+            # 2. Reset seleksi dan tetapkan kembali hanya 1 objek terbaru (menghindari multi-selection)
+            if len(current_paths) > 1:
+                self.is_enforcing_selection = True
+                try:
+                    selection.clear_selected_prim_paths()
+                    selection.set_selected_prim_paths([saved_target_id], False)
+
+                    try:
+                        import omni.kit.commands
+                        omni.kit.commands.execute(
+                            'SelectPrims',
+                            old_selected_paths=current_paths,
+                            new_selected_paths=[saved_target_id],
+                            expand_in_stage=False
+                        )
+                    except Exception:
+                        pass
+                finally:
+                    self.is_enforcing_selection = False
+
+            self.previous_selection_set = {saved_target_id}
+            self._notify_level(stage or usd_context.get_stage(), saved_target_id)
+
+        except Exception as err:
+            print(f"[SelectionHelper] enforce_single_selection error: {err}")
+
+    def _notify_level(self, stage: Optional[Usd.Stage], prim_path: Optional[str]) -> None:
+        """Dispatches on_selection_changed hook to active level if implemented."""
+        if self.manager and self.manager.active_level:
+            try:
+                self.manager.active_level.on_selection_changed(stage, prim_path)
+            except Exception:
+                pass
+
+    def get_selected_prim(self) -> Optional[str]:
+        """Returns the currently active single selected prim path."""
+        return self.saved_selected_prim
+
+    def clear_selection(self) -> None:
+        """Clears all viewport selection."""
+        try:
+            usd_context = omni.usd.get_context()
+            if usd_context:
+                sel = usd_context.get_selection()
+                if sel:
+                    sel.clear_selected_prim_paths()
+        except Exception:
+            pass
+        self.saved_selected_prim = None
+        self.previous_selection_set = set()
+
+    def set_selection(self, prim_path: str) -> None:
+        """Sets single selection programmatically."""
+        try:
+            usd_context = omni.usd.get_context()
+            if usd_context and prim_path:
+                sel = usd_context.get_selection()
+                if sel:
+                    sel.set_selected_prim_paths([prim_path], False)
+        except Exception:
+            pass
+        self.saved_selected_prim = prim_path
+        self.previous_selection_set = {prim_path}
+
+    def destroy(self) -> None:
+        """Cleans up event subscription on shutdown."""
+        self._stage_event_sub = None
+        self.saved_selected_prim = None
+        self.previous_selection_set.clear()

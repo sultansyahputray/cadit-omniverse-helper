@@ -99,6 +99,23 @@ class BaseLevelHandler(ABC):
     def zoom_to_fit_object(self, stage: Usd.Stage, prim_path: str) -> bool:
         return self.camera_helper.zoom_to_fit_object(stage, prim_path)
 
+    # --- Delegated Selection Methods ---
+    def get_selected_prim(self) -> Optional[str]:
+        """Returns the currently active single selected prim path."""
+        if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
+            return self.manager.selection_helper.get_selected_prim()
+        return None
+
+    def clear_selection(self) -> None:
+        """Clears all viewport selection."""
+        if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
+            self.manager.selection_helper.clear_selection()
+
+    def set_selection(self, prim_path: str) -> None:
+        """Sets single selection programmatically."""
+        if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
+            self.manager.selection_helper.set_selection(prim_path)
+
     # --- Navigation Request ---
     def request_navigate(self, target_level_id: str, item_id: Optional[str] = None, **extra_data) -> bool:
         """Requests LevelManager to switch to target_level_id."""
@@ -119,4 +136,8 @@ class BaseLevelHandler(ABC):
 
     def on_update(self, stage: Usd.Stage, dt: float) -> None:
         """Called every frame during update stream (e.g. 60 FPS)."""
+        pass
+
+    def on_selection_changed(self, stage: Optional[Usd.Stage], prim_path: Optional[str]) -> None:
+        """Called whenever user selects or unselects an object in the 3D viewport."""
         pass

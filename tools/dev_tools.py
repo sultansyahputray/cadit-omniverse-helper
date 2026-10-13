@@ -347,6 +347,11 @@ def cmd_init(args):
     (helpers_dir / "camera_helper.py").write_text(cam_code, encoding="utf-8")
     print("  [+] Created core/helpers/camera_helper.py")
 
+    # 9. Write core/helpers/selection_helper.py
+    sel_code = read_template("selection_helper_template.py.txt")
+    (helpers_dir / "selection_helper.py").write_text(sel_code, encoding="utf-8")
+    print("  [+] Created core/helpers/selection_helper.py")
+
     # 9. Write core/base_level.py
     base_level_code = read_template("base_level_template.py.txt")
     (core_dir / "base_level.py").write_text(base_level_code, encoding="utf-8")

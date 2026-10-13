@@ -48,6 +48,10 @@ class CameraHelper:
                 if settings:
                     settings.set("/app/viewport/camera/tumbleAtCursor", False)
                     settings.set("/persistent/app/viewport/camera/tumbleAtCursor", False)
+                    settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
+                    settings.set("/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
+                    settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
+                    settings.set("/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
             except Exception:
                 pass
 

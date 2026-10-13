@@ -17,6 +17,7 @@ import omni.usd
 
 from .context import NavigationContext
 from .base_level import BaseLevelHandler
+from .helpers.selection_helper import SelectionHelper
 
 
 class LevelManager:
@@ -27,6 +28,7 @@ class LevelManager:
         self._active_level_id: Optional[str] = None
         self._context: NavigationContext = NavigationContext(current_level="uninitialized")
         self._is_transitioning: bool = False
+        self.selection_helper = SelectionHelper(self)
         self._auto_discover_levels()
 
     @property
@@ -165,5 +167,11 @@ class LevelManager:
                 self.active_level.on_exit(stage, "shutdown")
             except Exception:
                 pass
+        if hasattr(self, "selection_helper") and self.selection_helper:
+            try:
+                self.selection_helper.destroy()
+            except Exception:
+                pass
+            self.selection_helper = None
         self._handlers.clear()
         self._active_level_id = None
