@@ -3,7 +3,7 @@
 CameraHelper Engine:
 Controls viewport camera navigation, locking orbit pivot to (0,0,0) or object bounding boxes.
 Disables erratic mouse tumble, provides ViewCube presets (iso, top, front, etc.),
-and provides gradual zoom and zoom-to-fit controls.
+gradual zoom, zoom-to-fit controls, and built-in smooth cinematic glide transitions.
 """
 
 from typing import Optional, Tuple, Dict, Any, Union
@@ -32,12 +32,26 @@ VIEWCUBE_DIRECTIONS = {
 
 
 class CameraHelper:
-    """Orbit Pivot, ViewCube Presets, and Zoom Navigation Engine."""
+    """Orbit Pivot, ViewCube Presets, Zoom Navigation, and Smooth Glide Engine."""
 
-    def __init__(self):
+    def __init__(self, enable_smooth_glide: bool = True, default_glide_duration: float = 1.0):
         self._current_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
         self._current_distance: float = 1000.0
         self._current_view_direction: Gf.Vec3d = VIEWCUBE_DIRECTIONS["iso"]
+
+        # Smooth Glide Interpolator configuration
+        self.enable_smooth_glide: bool = enable_smooth_glide
+        self.default_glide_duration: float = default_glide_duration
+        self._is_gliding: bool = False
+        self._glide_elapsed: float = 0.0
+        self._glide_duration: float = 1.0
+        self._glide_start_pos: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._glide_start_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._glide_start_distance: float = 1000.0
+        self._glide_target_pos: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._glide_target_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._glide_target_distance: float = 1000.0
+
         self._disable_cursor_tumble()
 
     def _disable_cursor_tumble(self) -> None:
@@ -92,78 +106,68 @@ class CameraHelper:
         """
         try:
             xformable = UsdGeom.Xformable(p)
-
-            # Check if xformOp:transform already exists on the prim
             trans_attr = p.GetAttribute("xformOp:transform")
             order_attr = xformable.GetXformOpOrderAttr()
             cur_order = list(order_attr.Get()) if order_attr and order_attr.IsValid() and order_attr.Get() else []
 
-            if "xformOp:transform" in cur_order and trans_attr and trans_attr.IsValid():
-                trans_attr.Set(cam_mat)
-            else:
-                # Clear individual translate/rotate/scale ops that override transform
-                for op_name in ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]:
+            if not trans_attr or not trans_attr.IsValid():
+                for op_name in cur_order:
                     attr = p.GetAttribute(op_name)
                     if attr and attr.IsValid():
                         attr.Clear()
-
+                trans_op = xformable.AddTransformOp(opSuffix="")
+                trans_op.Set(cam_mat)
+            else:
+                trans_attr.Set(cam_mat)
                 if "xformOp:transform" not in cur_order:
-                    xformable.ClearXformOpOrder()
-                    op = xformable.AddTransformOp()
-                    op.Set(cam_mat)
-                else:
-                    if not trans_attr or not trans_attr.IsValid():
-                        trans_attr = p.CreateAttribute("xformOp:transform", Sdf.ValueTypeNames.Matrix4d)
-                    trans_attr.Set(cam_mat)
+                    for op_name in cur_order:
+                        attr = p.GetAttribute(op_name)
+                        if attr and attr.IsValid():
+                            attr.Clear()
+                    xformable.SetXformOpOrder([Sdf.Token("xformOp:transform")])
 
-            cam_api = UsdGeom.Camera(p)
-            cam_api.CreateProjectionAttr().Set(UsdGeom.Tokens.perspective)
-            cam_api.CreateFocusDistanceAttr().Set(dist)
-            cam_api.CreateFocalLengthAttr().Set(focal_length)
-            cam_api.CreateClippingRangeAttr().Set(Gf.Vec2f(1.0, 1000000.0))
-
-            # Set Center of Interest: In camera space looking along -Z, COI is (0, 0, -dist)
-            coi_attr = p.GetAttribute("omni:kit:centerOfInterest")
-            if not coi_attr or not coi_attr.IsValid():
-                coi_attr = p.CreateAttribute(
-                    "omni:kit:centerOfInterest",
-                    Sdf.ValueTypeNames.Vector3d,
-                    True,
-                    Sdf.VariabilityUniform
-                )
-            coi_attr.Set(Gf.Vec3d(0.0, 0.0, -dist))
-
-            for lock_name in ["camera:omni:kit:cameraLock", "omni:kit:cameraLock"]:
-                l_attr = p.GetAttribute(lock_name)
-                if l_attr and l_attr.IsValid():
-                    l_attr.Set(False)
+            # Configure lens attributes
+            for attr_name, val_type, val in [
+                ("projection", Sdf.ValueTypeNames.Token, "perspective"),
+                ("focalLength", Sdf.ValueTypeNames.Float, float(focal_length)),
+                ("focusDistance", Sdf.ValueTypeNames.Float, float(dist)),
+                ("clippingRange", Sdf.ValueTypeNames.Vec2f, Gf.Vec2f(1.0, 10000000.0)),
+                ("centerOfInterest", Sdf.ValueTypeNames.Float, float(dist)),
+                ("camera:lock", Sdf.ValueTypeNames.Bool, False),
+                ("omni:kit:camera:lock", Sdf.ValueTypeNames.Bool, False),
+            ]:
+                attr = p.GetAttribute(attr_name)
+                if not attr or not attr.IsValid():
+                    attr = p.CreateAttribute(attr_name, val_type)
+                attr.Set(val)
 
         except Exception as e:
-            print(f"[CameraHelper] Error configuring camera prim: {e}")
+            print(f"[CameraHelper] Note during camera prim configuration: {e}")
 
-    def _apply_pose(self, stage: Usd.Stage, cam_pos: Gf.Vec3d, look_at: Gf.Vec3d, distance: float, focal_length: float = 20.0) -> None:
-        """Calculates LookAt transform and synchronizes camera prim across Session and Root layers."""
+    def _apply_pose(
+        self,
+        stage: Usd.Stage,
+        cam_pos: Gf.Vec3d,
+        look_at: Gf.Vec3d,
+        distance: float,
+        focal_length: float = 20.0,
+        cam_path: str = "/OmniverseKit_Persp"
+    ) -> None:
+        """Computes lookAt matrix and updates camera prim in SessionLayer and RootLayer."""
         if not stage:
             return
 
-        self._disable_cursor_tumble()
+        forward = (look_at - cam_pos).GetNormalized()
+        up_candidate = Gf.Vec3d(0.0, 1.0, 0.0)
 
-        up = Gf.Vec3d(0.0, 1.0, 0.0)
-        view_dir = (look_at - cam_pos).GetNormalized()
-        if abs(Gf.Dot(view_dir, up)) > 0.999:
-            up = Gf.Vec3d(0.0, 0.0, -1.0) if view_dir[1] > 0 else Gf.Vec3d(0.0, 0.0, 1.0)
+        # Handle singularity when looking directly along Y axis
+        if abs(forward[1]) > 0.999:
+            up_candidate = Gf.Vec3d(0.0, 0.0, -1.0 if forward[1] > 0 else 1.0)
 
-        rot_mat = Gf.Matrix4d().SetLookAt(cam_pos, look_at, up)
-        cam_mat = rot_mat.GetInverse()
+        cam_mat = Gf.Matrix4d()
+        cam_mat.SetLookAt(cam_pos, look_at, up_candidate)
+        cam_mat = cam_mat.GetInverse()
 
-        cam_prim = self.get_active_camera_prim(stage)
-        if not cam_prim or not cam_prim.IsValid():
-            print("[CameraHelper] Warning: No valid camera prim found on stage.")
-            return
-
-        cam_path = cam_prim.GetPath().pathString
-
-        # Apply to both SessionLayer and RootLayer for total stability across stages
         session_layer = stage.GetSessionLayer()
         if session_layer:
             with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
@@ -199,51 +203,61 @@ class CameraHelper:
         except Exception:
             pass
 
-        # Update internal tracking
         self._current_distance = distance
         self._current_pivot = look_at
 
-        print(f"[CameraHelper] Camera posed: Pos=({cam_pos[0]:.1f}, {cam_pos[1]:.1f}, {cam_pos[2]:.1f}) -> Orbit Pivot=({look_at[0]:.1f}, {look_at[1]:.1f}, {look_at[2]:.1f}) | Dist={distance:.1f}")
-
-    def set_camera_pose(
+    def _start_glide(
         self,
         stage: Usd.Stage,
-        position: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 1000.0),
-        rotation: Optional[Union[Tuple[float, float, float], Gf.Vec3d]] = None,
-        distance: float = 1000.0,
-        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0)
+        target_pos: Gf.Vec3d,
+        target_pivot: Gf.Vec3d,
+        target_distance: float,
+        duration: Optional[float] = None
     ) -> None:
-        """
-        Sets explicit camera position (x, y, z) and locks the orbit pivot strictly to pivot_point (default: 0, 0, 0).
-        """
-        pos_vec = Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
-        piv_vec = Gf.Vec3d(float(pivot_point[0]), float(pivot_point[1]), float(pivot_point[2]))
-        dist = (pos_vec - piv_vec).GetLength()
-        if dist < 1.0:
-            dist = float(distance)
+        """Initiates a smooth interpolated glide toward target camera transform."""
+        dur = duration if duration is not None else self.default_glide_duration
+        if dur <= 0.001 or not self.enable_smooth_glide:
+            self._is_gliding = False
+            self._apply_pose(stage, target_pos, target_pivot, target_distance)
+            return
 
-        print(f"[CameraHelper] Setting camera pose to Pos={pos_vec}, Orbit Pivot locked to {piv_vec}")
-        self._apply_pose(stage, cam_pos=pos_vec, look_at=piv_vec, distance=dist)
+        # Query current camera position to ensure smooth takeoff without jumping
+        cur_pos, cur_dist, _ = self.get_current_camera_pose(stage)
 
-    def set_camera_pivot(
-        self,
-        stage: Usd.Stage,
-        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
-        distance: float = 1000.0,
-        view: Optional[str] = None
-    ) -> None:
+        self._glide_start_pos = cur_pos
+        self._glide_start_pivot = self._current_pivot
+        self._glide_start_distance = cur_dist
+
+        self._glide_target_pos = target_pos
+        self._glide_target_pivot = target_pivot
+        self._glide_target_distance = target_distance
+
+        self._glide_duration = max(0.05, dur)
+        self._glide_elapsed = 0.0
+        self._is_gliding = True
+
+    def on_update(self, dt: float, stage: Optional[Usd.Stage] = None) -> None:
         """
-        Sets the camera orbit pivot point and positions the camera at the given distance.
-        Optionally switches to view preset (e.g. 'iso', 'front', 'top') if view is specified.
+        Frame update step for camera glide interpolation.
+        Uses a quintic smootherstep curve for zero acceleration and deceleration jerk.
         """
-        if view and view.lower() in VIEWCUBE_DIRECTIONS:
-            self._current_view_direction = VIEWCUBE_DIRECTIONS[view.lower()]
+        if not self._is_gliding or not stage:
+            return
 
-        self._current_pivot = Gf.Vec3d(pivot_point[0], pivot_point[1], pivot_point[2])
-        self._current_distance = max(1.0, float(distance))
+        self._glide_elapsed += dt
+        t = min(1.0, self._glide_elapsed / self._glide_duration)
 
-        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
-        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        # Quintic Smootherstep: 6t^5 - 15t^4 + 10t^3
+        ease_t = t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+        cur_pos = self._glide_start_pos + (self._glide_target_pos - self._glide_start_pos) * ease_t
+        cur_piv = self._glide_start_pivot + (self._glide_target_pivot - self._glide_start_pivot) * ease_t
+        cur_dist = self._glide_start_distance + (self._glide_target_distance - self._glide_start_distance) * ease_t
+
+        self._apply_pose(stage, cur_pos, cur_piv, cur_dist)
+
+        if t >= 1.0:
+            self._is_gliding = False
 
     def get_current_camera_pose(self, stage: Usd.Stage) -> Tuple[Gf.Vec3d, float, Gf.Vec3d]:
         """
@@ -269,22 +283,70 @@ class CameraHelper:
             self._current_view_direction
         )
 
+    def set_camera_pose(
+        self,
+        stage: Usd.Stage,
+        position: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 1000.0),
+        rotation: Optional[Union[Tuple[float, float, float], Gf.Vec3d]] = None,
+        distance: float = 1000.0,
+        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        """
+        Sets explicit camera position (x, y, z) and locks the orbit pivot strictly to pivot_point.
+        """
+        pos_vec = Gf.Vec3d(float(position[0]), float(position[1]), float(position[2]))
+        piv_vec = Gf.Vec3d(float(pivot_point[0]), float(pivot_point[1]), float(pivot_point[2]))
+        dist = (pos_vec - piv_vec).GetLength()
+        if dist < 1.0:
+            dist = float(distance)
+
+        use_smooth = self.enable_smooth_glide if smooth is None else smooth
+        if use_smooth:
+            self._start_glide(stage, pos_vec, piv_vec, dist, duration=duration)
+        else:
+            self._is_gliding = False
+            self._apply_pose(stage, cam_pos=pos_vec, look_at=piv_vec, distance=dist)
+
+    def set_camera_pivot(
+        self,
+        stage: Usd.Stage,
+        pivot_point: Union[Tuple[float, float, float], Gf.Vec3d] = (0.0, 0.0, 0.0),
+        distance: float = 1000.0,
+        view: Optional[str] = None,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        """
+        Sets the camera orbit pivot point and positions the camera at the given distance.
+        Optionally switches to view preset (e.g. 'iso', 'front', 'top') if view is specified.
+        """
+        if view and view.lower() in VIEWCUBE_DIRECTIONS:
+            self._current_view_direction = VIEWCUBE_DIRECTIONS[view.lower()]
+
+        target_pivot = Gf.Vec3d(pivot_point[0], pivot_point[1], pivot_point[2])
+        target_dist = max(1.0, float(distance))
+        target_cam_pos = target_pivot + (self._current_view_direction * target_dist)
+
+        use_smooth = self.enable_smooth_glide if smooth is None else smooth
+        if use_smooth:
+            self._start_glide(stage, target_cam_pos, target_pivot, target_dist, duration=duration)
+        else:
+            self._is_gliding = False
+            self._apply_pose(stage, target_cam_pos, target_pivot, target_dist)
+
     def set_camera_pivot_to_object(
         self,
         stage: Usd.Stage,
         prim_path: str,
         distance: Optional[float] = None,
-        zoom: bool = True
+        zoom: bool = True,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
     ) -> bool:
         """
         Moves orbit pivot to the geometric center (midpoint) of the target object's bounding box.
-
-        Args:
-            stage: Active USD stage.
-            prim_path: Path of the target prim.
-            distance: Explicit camera distance. If specified as float (e.g. 500.0), camera zooms to this distance.
-            zoom: If False, preserves the current camera distance without any zoom change.
-                  If True and distance is None, automatically calculates distance based on bounding box.
         """
         if not stage or not prim_path:
             return False
@@ -306,34 +368,38 @@ class CameraHelper:
         mid = rng.GetMidpoint()
         size = (rng.GetMax() - rng.GetMin()).GetLength()
 
-        # Query current camera orientation so we preserve viewing angle smoothly
         _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
         self._current_view_direction = cur_dir
 
         if not zoom:
-            # Preserve current camera zoom distance
             target_dist = cur_dist
-            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (no zoom, preserving dist={target_dist:.1f})")
         elif distance is not None:
-            # Custom zoom distance specified
             target_dist = max(10.0, float(distance))
-            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (custom zoom dist={target_dist:.1f})")
         else:
-            # Auto-fit based on bounding box size
             target_dist = max(100.0, size * 1.5)
-            print(f"[CameraHelper] Locking orbit pivot to '{prim_path}' at Center=({mid[0]:.1f}, {mid[1]:.1f}, {mid[2]:.1f}) (auto-fit dist={target_dist:.1f})")
 
-        self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist)
+        self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist, smooth=smooth, duration=duration)
         return True
 
-    def reset_camera_pivot(self, stage: Usd.Stage) -> None:
+    def reset_camera_pivot(
+        self,
+        stage: Usd.Stage,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
         """Resets camera pivot back to the global origin (0, 0, 0)."""
         _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
         self._current_view_direction = cur_dir
-        print(f"[CameraHelper] Resetting orbit pivot to origin (0.0, 0.0, 0.0) | preserving dist={cur_dist:.1f}")
-        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=cur_dist)
+        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=cur_dist, smooth=smooth, duration=duration)
 
-    def set_camera_view(self, stage: Usd.Stage, view_name: str = "iso", distance: Optional[float] = None) -> bool:
+    def set_camera_view(
+        self,
+        stage: Usd.Stage,
+        view_name: str = "iso",
+        distance: Optional[float] = None,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> bool:
         """
         Rotates camera to standard dice presets ('iso', 'top', 'front', 'back', 'left', 'right', 'bottom').
         Preserves current pivot point, or updates distance if provided.
@@ -346,30 +412,63 @@ class CameraHelper:
             self._current_distance = max(1.0, float(distance))
 
         self._current_view_direction = VIEWCUBE_DIRECTIONS[key]
-        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
-        print(f"[CameraHelper] Set view preset '{key.upper()}': Pivot={self._current_pivot}, Distance={self._current_distance:.1f}")
-        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        target_cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
+
+        use_smooth = self.enable_smooth_glide if smooth is None else smooth
+        if use_smooth:
+            self._start_glide(stage, target_cam_pos, self._current_pivot, self._current_distance, duration=duration)
+        else:
+            self._is_gliding = False
+            self._apply_pose(stage, target_cam_pos, self._current_pivot, self._current_distance)
         return True
 
-    def camera_zoom_in(self, stage: Usd.Stage, factor: float = 0.8) -> None:
+    def camera_zoom_in(
+        self,
+        stage: Usd.Stage,
+        factor: float = 0.8,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
         """Zooms camera in toward the active pivot point."""
-        self._current_distance = max(10.0, self._current_distance * factor)
-        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
-        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        new_dist = max(10.0, self._current_distance * factor)
+        self.set_camera_distance(stage, new_dist, smooth=smooth, duration=duration)
 
-    def camera_zoom_out(self, stage: Usd.Stage, factor: float = 1.25) -> None:
+    def camera_zoom_out(
+        self,
+        stage: Usd.Stage,
+        factor: float = 1.25,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
         """Zooms camera out away from the active pivot point."""
-        self._current_distance = max(10.0, self._current_distance * factor)
-        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
-        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        new_dist = max(10.0, self._current_distance * factor)
+        self.set_camera_distance(stage, new_dist, smooth=smooth, duration=duration)
 
-    def set_camera_distance(self, stage: Usd.Stage, distance: float) -> None:
+    def set_camera_distance(
+        self,
+        stage: Usd.Stage,
+        distance: float,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
         """Sets an exact distance from the camera to the active pivot."""
-        self._current_distance = max(10.0, float(distance))
-        cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)
-        self._apply_pose(stage, cam_pos, self._current_pivot, self._current_distance)
+        target_dist = max(10.0, float(distance))
+        target_cam_pos = self._current_pivot + (self._current_view_direction * target_dist)
 
-    def zoom_to_fit_object(self, stage: Usd.Stage, prim_path: str) -> bool:
+        use_smooth = self.enable_smooth_glide if smooth is None else smooth
+        if use_smooth:
+            self._start_glide(stage, target_cam_pos, self._current_pivot, target_dist, duration=duration)
+        else:
+            self._is_gliding = False
+            self._apply_pose(stage, target_cam_pos, self._current_pivot, target_dist)
+
+    def zoom_to_fit_object(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> bool:
         """Fits camera framing snugly around the target object's bounding box."""
         if not stage or not prim_path:
             return False
@@ -387,5 +486,5 @@ class CameraHelper:
         mid = rng.GetMidpoint()
         size = (rng.GetMax() - rng.GetMin()).GetLength()
         optimal_dist = max(50.0, size * 1.8)
-        self.set_camera_pivot(stage, pivot_point=mid, distance=optimal_dist)
+        self.set_camera_pivot(stage, pivot_point=mid, distance=optimal_dist, smooth=smooth, duration=duration)
         return True

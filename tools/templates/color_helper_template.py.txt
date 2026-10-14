@@ -3,19 +3,29 @@
 ColorHelper Engine:
 Provides direct, unopinionated color injection into USD prims and meshes.
 Supports Hex ("#00E5FF") and RGB tuples.
-Applies changes cleanly on SessionLayer and restores original colors automatically upon level exit.
+Includes integrated Emissive Glow and Pulsing/Flow FX on SessionLayer with auto-enabled RTX Bloom.
+Restores original colors and materials automatically upon level exit.
 """
 
+import math
 from typing import Dict, Any, Union, Tuple, List, Optional
 from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf
 
+try:
+    import carb.settings
+except ImportError:
+    carb = None
+
 
 class ColorHelper:
-    """Non-destructive USD color and material injection manager."""
+    """Non-destructive USD color, emissive glow, and pulse/flow material manager."""
 
     def __init__(self):
         # Maps prim_path -> original state dict (displayColor, original material path)
         self._original_colors: Dict[str, Dict[str, Any]] = {}
+        # Active pulse animations: prim_path -> dict(color_vec, base_intensity, speed, phase, mat_path)
+        self._active_pulses: Dict[str, Dict[str, Any]] = {}
+        self._bloom_initialized: bool = False
 
     @staticmethod
     def parse_color(color: Union[str, Tuple[float, float, float], List[float]]) -> Gf.Vec3f:
@@ -39,8 +49,27 @@ class ColorHelper:
             return Gf.Vec3f(float(color[0]) / scale, float(color[1]) / scale, float(color[2]) / scale)
         return Gf.Vec3f(1.0, 1.0, 1.0)
 
-    def _get_or_create_material(self, stage: Usd.Stage, color_vec: Gf.Vec3f) -> Optional[UsdShade.Material]:
-        """Creates or retrieves a SessionLayer material for the specified color."""
+    def enable_rtx_bloom(self, intensity: float = 0.95, threshold: float = 0.35) -> None:
+        """Configures RTX post-processing bloom for glowing emissive materials."""
+        if carb:
+            try:
+                settings = carb.settings.get_settings()
+                if settings:
+                    settings.set("/rtx/post/bloom/enabled", True)
+                    settings.set("/rtx/post/bloom/intensity", intensity)
+                    settings.set("/rtx/post/bloom/threshold", threshold)
+                    self._bloom_initialized = True
+            except Exception:
+                pass
+
+    def _get_or_create_material(
+        self,
+        stage: Usd.Stage,
+        color_vec: Gf.Vec3f,
+        glow: bool = False,
+        glow_intensity: float = 3000.0
+    ) -> Optional[UsdShade.Material]:
+        """Creates or retrieves a SessionLayer material with optional emissive glow."""
         if not stage:
             return None
         session_layer = stage.GetSessionLayer()
@@ -50,7 +79,9 @@ class ColorHelper:
         r_int = int(round(color_vec[0] * 255))
         g_int = int(round(color_vec[1] * 255))
         b_int = int(round(color_vec[2] * 255))
-        mat_name = f"InjectedMat_{r_int:02X}{g_int:02X}{b_int:02X}"
+
+        glow_tag = f"_Glow{int(glow_intensity)}" if glow else ""
+        mat_name = f"InjectedMat_{r_int:02X}{g_int:02X}{b_int:02X}{glow_tag}"
         mat_path = f"/World/Looks/{mat_name}"
 
         with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
@@ -65,8 +96,10 @@ class ColorHelper:
             shader = UsdShade.Shader.Define(stage, shader_path)
             shader.CreateIdAttr("UsdPreviewSurface")
             shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color_vec)
-            shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color_vec * 0.3)
-            shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+
+            emissive_factor = max(1.0, glow_intensity / 500.0) if glow else 0.2
+            shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(color_vec * emissive_factor)
+            shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.2 if glow else 0.4)
             material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
 
             # MDL OmniPBR Shader (RTX Real-Time)
@@ -75,6 +108,12 @@ class ColorHelper:
                 mdl_shader.SetSourceAsset("OmniPBR.mdl", "mdl")
                 mdl_shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
                 mdl_shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(color_vec)
+
+                if glow:
+                    mdl_shader.CreateInput("enable_emission", Sdf.ValueTypeNames.Bool).Set(True)
+                    mdl_shader.CreateInput("emissive_color", Sdf.ValueTypeNames.Color3f).Set(color_vec)
+                    mdl_shader.CreateInput("emissive_intensity", Sdf.ValueTypeNames.Float).Set(float(glow_intensity))
+
                 material.CreateSurfaceOutput("mdl").ConnectToSource(mdl_shader.ConnectableAPI(), "out")
             except Exception:
                 pass
@@ -85,10 +124,14 @@ class ColorHelper:
         self,
         stage: Usd.Stage,
         prim_path: str,
-        color: Union[str, Tuple[float, float, float], List[float]]
+        color: Union[str, Tuple[float, float, float], List[float]],
+        glow: bool = False,
+        glow_intensity: float = 3000.0,
+        pulse: bool = False,
+        pulse_speed: float = 1.0
     ) -> bool:
         """
-        Injects color into the specified prim and all its mesh descendants on SessionLayer.
+        Injects color or emissive glow into the specified prim and all its mesh descendants on SessionLayer.
         Preserves original colors for restoration on exit.
         """
         if not stage or not prim_path:
@@ -98,12 +141,16 @@ class ColorHelper:
         if not prim or not prim.IsValid():
             return False
 
+        if glow and not self._bloom_initialized:
+            self.enable_rtx_bloom()
+
         color_vec = self.parse_color(color)
         session_layer = stage.GetSessionLayer()
         if not session_layer:
             return False
 
-        material = self._get_or_create_material(stage, color_vec)
+        material = self._get_or_create_material(stage, color_vec, glow=glow, glow_intensity=glow_intensity)
+        mat_path = str(material.GetPath()) if material else None
 
         with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
             for child in Usd.PrimRange(prim):
@@ -144,23 +191,138 @@ class ColorHelper:
                     except Exception:
                         pass
 
+        # Handle pulse registration
+        if pulse and mat_path:
+            self._active_pulses[prim_path] = {
+                "color_vec": color_vec,
+                "base_intensity": glow_intensity if glow else 1000.0,
+                "speed": max(0.1, float(pulse_speed)),
+                "phase": 0.0,
+                "mat_path": mat_path,
+                "is_glow": glow
+            }
+        elif prim_path in self._active_pulses:
+            self._active_pulses.pop(prim_path, None)
+
         return True
+
+    def set_glow(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        color: Union[str, Tuple[float, float, float], List[float]],
+        intensity: float = 3000.0,
+        pulse: bool = False,
+        pulse_speed: float = 1.0
+    ) -> bool:
+        """Convenient shorthand for setting an emissive glowing prim with optional pulsing."""
+        return self.set_color(
+            stage,
+            prim_path,
+            color,
+            glow=True,
+            glow_intensity=intensity,
+            pulse=pulse,
+            pulse_speed=pulse_speed
+        )
 
     def set_colors(
         self,
         stage: Usd.Stage,
-        mapping: Dict[str, Union[str, Tuple[float, float, float], List[float]]]
+        mapping: Dict[str, Union[str, Tuple[float, float, float], List[float]]],
+        glow: bool = False,
+        glow_intensity: float = 3000.0
     ) -> None:
-        """
-        Batch injection of colors: { prim_path: color_value }
-        """
+        """Batch injection of colors: { prim_path: color_value }."""
         for prim_path, color_value in mapping.items():
-            self.set_color(stage, prim_path, color_value)
+            self.set_color(stage, prim_path, color_value, glow=glow, glow_intensity=glow_intensity)
+
+    def on_update(self, dt: float, stage: Optional[Usd.Stage] = None) -> None:
+        """Updates sinusoidal pulsing / flow FX animation on active materials."""
+        if not self._active_pulses or not stage:
+            return
+
+        session_layer = stage.GetSessionLayer()
+        if not session_layer:
+            return
+
+        with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+            for prim_path, info in list(self._active_pulses.items()):
+                info["phase"] = (info["phase"] + dt * info["speed"] * 2.0 * math.pi) % (2.0 * math.pi)
+                # Sinusoidal factor between 0.15 and 1.0
+                wave = 0.5 * (1.0 + math.sin(info["phase"]))
+                factor = 0.15 + (0.85 * wave)
+
+                mat_prim = stage.GetPrimAtPath(info["mat_path"])
+                if not mat_prim or not mat_prim.IsValid():
+                    continue
+
+                color_vec = info["color_vec"]
+                mod_color = color_vec * factor
+
+                # Modulate UsdPreviewSurface Shader
+                shader_prim = stage.GetPrimAtPath(f"{info['mat_path']}/Shader")
+                if shader_prim and shader_prim.IsValid():
+                    emiss_attr = shader_prim.GetAttribute("inputs:emissiveColor")
+                    if emiss_attr and emiss_attr.IsValid():
+                        mult = max(1.0, (info["base_intensity"] * factor) / 500.0) if info["is_glow"] else factor
+                        emiss_attr.Set(color_vec * mult)
+
+                # Modulate OmniPBR
+                omni_prim = stage.GetPrimAtPath(f"{info['mat_path']}/OmniPBR")
+                if omni_prim and omni_prim.IsValid():
+                    intens_attr = omni_prim.GetAttribute("inputs:emissive_intensity")
+                    if intens_attr and intens_attr.IsValid():
+                        intens_attr.Set(info["base_intensity"] * factor)
+
+    def restore_color(self, stage: Usd.Stage, prim_path: str) -> None:
+        """Restores a single prim and its mesh descendants back to original state."""
+        if not stage or not prim_path:
+            return
+
+        self._active_pulses.pop(prim_path, None)
+        session_layer = stage.GetSessionLayer()
+        if not session_layer:
+            return
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim or not prim.IsValid():
+            return
+
+        with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
+            for child in Usd.PrimRange(prim):
+                c_path = str(child.GetPath())
+                if c_path in self._original_colors:
+                    orig_state = self._original_colors.pop(c_path)
+                    if child.IsA(UsdGeom.Gprim):
+                        gprim = UsdGeom.Gprim(child)
+                        color_attr = gprim.GetDisplayColorAttr()
+                        if color_attr and color_attr.IsValid():
+                            if "display_color" in orig_state and orig_state["display_color"] is not None:
+                                color_attr.Set(orig_state["display_color"])
+                            else:
+                                color_attr.Clear()
+
+                    try:
+                        UsdShade.MaterialBindingAPI(child).UnbindAllBindings()
+                    except Exception:
+                        pass
+
+                    if "material_path" in orig_state and orig_state["material_path"]:
+                        orig_mat_prim = stage.GetPrimAtPath(orig_state["material_path"])
+                        if orig_mat_prim and orig_mat_prim.IsValid():
+                            try:
+                                orig_mat = UsdShade.Material(orig_mat_prim)
+                                UsdShade.MaterialBindingAPI(child).Bind(orig_mat)
+                            except Exception:
+                                pass
 
     def restore_all_colors(self, stage: Usd.Stage) -> None:
         """
         Restores all modified prims to their original state and clears SessionLayer overrides.
+        Cancels all active pulse animations.
         """
+        self._active_pulses.clear()
         if not stage or not self._original_colors:
             return
 

@@ -216,30 +216,35 @@ positions = self.get_tracked_screen_positions(stage, client_aspect=1.777)
 
 ---
 
-### 2.3 Direct Color Injection Engine (`ColorHelper`)
-Mengubah material diffuse color pada prim secara dinamis tanpa mengubah file USD master di disk.
+### 2.3 Direct Color, Emissive Glow, and Flow FX Engine (`ColorHelper`)
+Mengubah material diffuse color, memancarkan efek pendaran cahaya (emissive glow), dan menghasilkan animasi pulsasi aliran (flow pulsing FX) pada prim secara dinamis tanpa mengubah file USD master di disk.
 
 #### Spesifikasi Teknis:
-* **SessionLayer Overrides:** Seluruh modifikasi warna diaplikasikan pada `stage.GetSessionLayer()`. Asset master USD tetap bersih dari modifikasi runtime.
+* **SessionLayer Overrides:** Seluruh modifikasi warna dan material diaplikasikan pada `stage.GetSessionLayer()`. Asset master USD tetap bersih dari modifikasi runtime.
 * **Format Warna Fleksibel:**
   * Hex String: `"#FF0000"`, `"#00E5FF"`, `"#888"`
   * Tuple RGB Float (0.0 - 1.0): `(1.0, 0.0, 0.0)`
   * Tuple RGB Int (0 - 255): `(255, 0, 0)`
+* **Integrated Emissive Glow:**
+  * Mendukung parameter `glow=True` dengan intensitas emisi kustom (`glow_intensity=3000.0` hingga `6000.0`).
+  * Otomatis mengaktifkan post-processing RTX Bloom (`/rtx/post/bloom/enabled`) di Omniverse Kit tanpa konfigurasi render manual.
+* **Sinusoidal Pulsing / Flow FX:**
+  * Mendukung animasi denyut/aliran dinamis (`pulse=True`, `pulse_speed=1.5`) yang diperbarui secara otomatis pada loop frame. Cocok untuk visualisasi pipa MEP (listrik, pendingin) dan status darurat.
 * **Recursive Submesh Traversal:** Otomatis menelusuri seluruh anak geometri (`UsdGeom.Mesh`, `UsdGeom.Subset`) di bawah root prim target.
-* **State Restoration:** Menyimpan warna awal sebelum diubah, dan menyediakan method pemulihan total saat level ditinggalkan (`restore_all_colors`).
+* **State Restoration:** Menyimpan status material awal sebelum diubah, dan menyediakan method pemulihan total saat level ditinggalkan (`restore_all_colors`).
 
 #### Contoh Pemanggilan Python:
 ```python
-# Memberikan warna merah tanda bahaya pada komponen chiller:
-self.set_color(stage, "/World/Room/Chiller_01", "#FF2200")
+# 1. Memberikan warna standar (diffuse):
+self.set_color(stage, "/World/Room/Rack_01", "#00FF88")
 
-# Memberikan warna batch ke banyak objek sekaligus:
-self.set_colors(stage, {
-    "/World/Room/Rack_01": "#00FF88",
-    "/World/Room/Rack_02": (1.0, 0.8, 0.0)
-})
+# 2. Memberikan efek pendaran cahaya (emissive glow) pada pipa:
+self.set_glow(stage, "/World/Pipes/Cooling_Inlet", color="#00E5FF", intensity=5000.0)
 
-# Pemulihan ke kondisi awal:
+# 3. Warna berpendar dengan denyut pulsasi (Flow FX atau status bahaya):
+self.set_color(stage, "/World/Alarms/Beacon_01", "#FF2200", glow=True, pulse=True, pulse_speed=2.0)
+
+# 4. Pemulihan ke kondisi awal:
 self.restore_all_colors(stage)
 ```
 
@@ -270,8 +275,8 @@ def on_update(self, stage: Usd.Stage, dt: float) -> None:
 
 ---
 
-### 2.5 Camera Navigation and ViewCube Engine (`CameraHelper`)
-Menyediakan kendali navigasi kamera viewport yang terukur dan deterministik.
+### 2.5 Camera Navigation, ViewCube, and Smooth Glide Engine (`CameraHelper`)
+Menyediakan kendali navigasi kamera viewport yang terukur, deterministik, dan dilengkapi transisi sinematik halus (*smooth glide interpolation*).
 
 #### Spesifikasi Teknis:
 * **Tumble Cursor Lockdown:** Mematikan opsi `tumbleAtCursor` Kit agar kamera tidak meloncat ke sembarang titik koordinat saat rotasi kursor dilakukan.
@@ -280,16 +285,23 @@ Menyediakan kendali navigasi kamera viewport yang terukur dan deterministik.
   * `"top"` / `"bottom"`: Pandangan atas dan bawah.
   * `"front"` / `"back"`: Pandangan depan dan belakang.
   * `"left"` / `"right"`: Pandangan samping kiri dan kanan.
+* **Built-in Smooth Cinematic Glide (Interpolation):**
+  * Setiap perubahan sudut pandang, framing objek, atau transisi level otomatis meluncur halus (*glide*) menggunakan kurva interpolasi *quintic smootherstep* (`6t^5 - 15t^4 + 10t^3`) yang menghilangkan sentakan percepatan dan perlambatan.
+  * Parameter `smooth=True` (default) dan `duration=1.0` detik.
+  * Dapat dinonaktifkan secara instan kapan saja menggunakan parameter `smooth=False` atau `duration=0.0`.
 * **Object Pivot Focusing & Auto-Framing:** Memindahkan pusat orbit kamera tepat ke titik tengah (*centroid*) dari bounding box prim target (`set_camera_pivot_to_object`).
 * **Stepped Zoom Controls:** Kendali zoom terukur melalui rasio perkalian (`camera_zoom_in`, `camera_zoom_out`).
 
 #### Contoh Pemanggilan Python:
 ```python
-# Atur sudut pandang isometrik berpusat di (0, 0, 0):
-self.set_camera_view(stage, "iso", distance=1200.0)
+# Berpindah ke sudut isometrik dengan glide sinematik selama 1.2 detik:
+self.set_camera_view(stage, "iso", distance=1200.0, duration=1.2)
 
-# Kunci poros orbit ke objek spesifik:
-self.set_camera_pivot_to_object(stage, "/World/Room/Rack_01", distance=500.0, zoom=True)
+# Fokus ke objek tertentu dengan auto-framing dan transisi halus:
+self.set_camera_pivot_to_object(stage, "/World/Room/Rack_01", distance=500.0)
+
+# Pindah instan tanpa interpolasi (cut langsung):
+self.set_camera_view(stage, "top", smooth=False)
 
 # Zoom in bertahap:
 self.camera_zoom_in(stage, factor=0.8)

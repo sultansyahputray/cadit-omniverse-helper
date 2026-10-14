@@ -48,6 +48,8 @@ class Level01DefaultHandler(BaseLevelHandler):
 
             # Contoh langsung inject warna variabel:
             # self.set_color(stage, self.root_prim_path, self.accent_color)
+            # Contoh glow berpendar atau pulsasi:
+            # self.set_glow(stage, self.root_prim_path, "#00E5FF", intensity=4000.0, pulse=True)
 
     def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
         print(f"[{self.level_id}] Exiting to {next_level_id}")

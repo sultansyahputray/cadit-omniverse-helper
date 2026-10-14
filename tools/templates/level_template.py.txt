@@ -56,6 +56,8 @@ class {class_name}(BaseLevelHandler):
 
             # Contoh direct color injection:
             # self.set_color(stage, "/World/Equipment", "#FFB300")
+            # Contoh glow berpendar / flow pulsing FX:
+            # self.set_glow(stage, "/World/Pipes/Cooling", "#00E5FF", intensity=5000.0, pulse=True)
 
     def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
         print(f"[{self.level_id}] Exiting to {next_level_id}")

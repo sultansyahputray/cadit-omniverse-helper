@@ -64,40 +64,136 @@ class BaseLevelHandler(ABC):
     def clear_projection_cache(self) -> None:
         self.projection_helper.clear_projection_cache()
 
-    # --- Delegated Color Methods ---
-    def set_color(self, stage: Usd.Stage, prim_path: str, color: Any) -> bool:
-        return self.color_helper.set_color(stage, prim_path, color)
+    # --- Delegated Color, Glow & Pulse Methods ---
+    def set_color(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        color: Any,
+        glow: bool = False,
+        glow_intensity: float = 3000.0,
+        pulse: bool = False,
+        pulse_speed: float = 1.0
+    ) -> bool:
+        return self.color_helper.set_color(
+            stage, prim_path, color, glow=glow, glow_intensity=glow_intensity, pulse=pulse, pulse_speed=pulse_speed
+        )
 
-    def set_colors(self, stage: Usd.Stage, mapping: dict) -> None:
-        self.color_helper.set_colors(stage, mapping)
+    def set_glow(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        color: Any,
+        intensity: float = 3000.0,
+        pulse: bool = False,
+        pulse_speed: float = 1.0
+    ) -> bool:
+        return self.color_helper.set_glow(
+            stage, prim_path, color, intensity=intensity, pulse=pulse, pulse_speed=pulse_speed
+        )
+
+    def set_colors(
+        self,
+        stage: Usd.Stage,
+        mapping: dict,
+        glow: bool = False,
+        glow_intensity: float = 3000.0
+    ) -> None:
+        self.color_helper.set_colors(stage, mapping, glow=glow, glow_intensity=glow_intensity)
+
+    def restore_color(self, stage: Usd.Stage, prim_path: str) -> None:
+        self.color_helper.restore_color(stage, prim_path)
 
     def restore_all_colors(self, stage: Usd.Stage) -> None:
         self.color_helper.restore_all_colors(stage)
 
-    # --- Delegated Camera Methods ---
-    def set_camera_pose(self, stage: Usd.Stage, position=(0.0, 0.0, 1000.0), rotation=(0.0, 0.0, 0.0), distance=1000.0, pivot_point=(0.0, 0.0, 0.0)) -> None:
-        self.camera_helper.set_camera_pose(stage, position, rotation, distance, pivot_point=pivot_point)
+    # --- Delegated Camera Methods (with built-in smooth glide) ---
+    def set_camera_pose(
+        self,
+        stage: Usd.Stage,
+        position=(0.0, 0.0, 1000.0),
+        rotation=(0.0, 0.0, 0.0),
+        distance=1000.0,
+        pivot_point=(0.0, 0.0, 0.0),
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        self.camera_helper.set_camera_pose(
+            stage, position, rotation, distance, pivot_point=pivot_point, smooth=smooth, duration=duration
+        )
 
-    def set_camera_pivot(self, stage: Usd.Stage, pivot_point=(0.0, 0.0, 0.0), distance=1000.0, view: Optional[str] = None) -> None:
-        self.camera_helper.set_camera_pivot(stage, pivot_point, distance, view=view)
+    def set_camera_pivot(
+        self,
+        stage: Usd.Stage,
+        pivot_point=(0.0, 0.0, 0.0),
+        distance=1000.0,
+        view: Optional[str] = None,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        self.camera_helper.set_camera_pivot(
+            stage, pivot_point, distance, view=view, smooth=smooth, duration=duration
+        )
 
-    def set_camera_pivot_to_object(self, stage: Usd.Stage, prim_path: str, distance: Optional[float] = None, zoom: bool = True) -> bool:
-        return self.camera_helper.set_camera_pivot_to_object(stage, prim_path, distance=distance, zoom=zoom)
+    def set_camera_pivot_to_object(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        distance: Optional[float] = None,
+        zoom: bool = True,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> bool:
+        return self.camera_helper.set_camera_pivot_to_object(
+            stage, prim_path, distance=distance, zoom=zoom, smooth=smooth, duration=duration
+        )
 
-    def reset_camera_pivot(self, stage: Usd.Stage) -> None:
-        self.camera_helper.reset_camera_pivot(stage)
+    def reset_camera_pivot(
+        self,
+        stage: Usd.Stage,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        self.camera_helper.reset_camera_pivot(stage, smooth=smooth, duration=duration)
 
-    def set_camera_view(self, stage: Usd.Stage, view_name: str = "iso", distance: Optional[float] = None) -> bool:
-        return self.camera_helper.set_camera_view(stage, view_name, distance=distance)
+    def set_camera_view(
+        self,
+        stage: Usd.Stage,
+        view_name: str = "iso",
+        distance: Optional[float] = None,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> bool:
+        return self.camera_helper.set_camera_view(
+            stage, view_name, distance=distance, smooth=smooth, duration=duration
+        )
 
-    def camera_zoom_in(self, stage: Usd.Stage, factor=0.8) -> None:
-        self.camera_helper.camera_zoom_in(stage, factor)
+    def camera_zoom_in(
+        self,
+        stage: Usd.Stage,
+        factor=0.8,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        self.camera_helper.camera_zoom_in(stage, factor, smooth=smooth, duration=duration)
 
-    def camera_zoom_out(self, stage: Usd.Stage, factor=1.25) -> None:
-        self.camera_helper.camera_zoom_out(stage, factor)
+    def camera_zoom_out(
+        self,
+        stage: Usd.Stage,
+        factor=1.25,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> None:
+        self.camera_helper.camera_zoom_out(stage, factor, smooth=smooth, duration=duration)
 
-    def zoom_to_fit_object(self, stage: Usd.Stage, prim_path: str) -> bool:
-        return self.camera_helper.zoom_to_fit_object(stage, prim_path)
+    def zoom_to_fit_object(
+        self,
+        stage: Usd.Stage,
+        prim_path: str,
+        smooth: Optional[bool] = None,
+        duration: Optional[float] = None
+    ) -> bool:
+        return self.camera_helper.zoom_to_fit_object(stage, prim_path, smooth=smooth, duration=duration)
 
     # --- Delegated Selection Methods ---
     def get_selected_prim(self) -> Optional[str]:

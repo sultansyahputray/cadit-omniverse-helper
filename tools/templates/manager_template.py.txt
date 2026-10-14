@@ -168,6 +168,22 @@ class LevelManager:
 
         if self.active_level:
             stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+
+            # 1. Update camera glide interpolation
+            if hasattr(self.active_level, "camera_helper") and self.active_level.camera_helper:
+                try:
+                    self.active_level.camera_helper.on_update(dt, stage)
+                except Exception:
+                    pass
+
+            # 2. Update color pulse / flow FX animation
+            if hasattr(self.active_level, "color_helper") and self.active_level.color_helper:
+                try:
+                    self.active_level.color_helper.on_update(dt, stage)
+                except Exception:
+                    pass
+
+            # 3. Level-specific frame updates
             try:
                 self.active_level.on_update(stage, dt)
             except Exception as e:
