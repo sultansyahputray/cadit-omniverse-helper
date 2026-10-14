@@ -165,6 +165,31 @@ class BaseLevelHandler(ABC):
         if BaseLevelHandler._navigator_window:
             BaseLevelHandler._navigator_window.visible = False
 
+    # --- Telemetry & Web Bridge Hooks ---
+    def get_telemetry_payload(self) -> Dict[str, Any]:
+        """
+        Override this method to expose level-specific metrics and data to the Web Dashboard.
+        Automatically embedded in GET /api/telemetry under level_telemetry.data.
+        """
+        return {}
+
+    def on_telemetry_received(self, data: Dict[str, Any]) -> None:
+        """
+        Override this method to react to incoming telemetry and commands from Web Dashboard.
+        Executes safely on the main Omniverse thread.
+        """
+        pass
+
+    def apply_cached_telemetry_if_any(self) -> None:
+        """Applies cached telemetry if data was received while this level was inactive."""
+        if self.manager and hasattr(self.manager, "telemetry_helper") and self.manager.telemetry_helper:
+            cached_data = self.manager.telemetry_helper.get_cached_telemetry(self.level_id)
+            if cached_data:
+                try:
+                    self.on_telemetry_received(cached_data)
+                except Exception as e:
+                    print(f"[{self.level_id}] Note applying cached telemetry on enter: {e}")
+
     # --- Lifecycle Hooks ---
     @abstractmethod
     def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:

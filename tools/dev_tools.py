@@ -352,7 +352,12 @@ def cmd_init(args):
     (helpers_dir / "selection_helper.py").write_text(sel_code, encoding="utf-8")
     print("  [+] Created core/helpers/selection_helper.py")
 
-    # 9. Write core/base_level.py
+    # 10. Write core/helpers/telemetry_helper.py
+    telem_code = read_template("telemetry_helper_template.py.txt")
+    (helpers_dir / "telemetry_helper.py").write_text(telem_code, encoding="utf-8")
+    print("  [+] Created core/helpers/telemetry_helper.py")
+
+    # 11. Write core/base_level.py
     base_level_code = read_template("base_level_template.py.txt")
     (core_dir / "base_level.py").write_text(base_level_code, encoding="utf-8")
     print("  [+] Created core/base_level.py")

@@ -65,10 +65,27 @@ class Level01DefaultHandler(BaseLevelHandler):
 
     def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
         self.selected_item = prim_path
-        # 🎯 Pilihan konfigurasi zoom saat klik:
+        # Pilihan konfigurasi zoom saat klik:
         # 1. Mengikuti class property (default):
         super().on_selection_changed(stage, prim_path)
         # 2. Tanpa zoom sama sekali (hanya lock pivot):
         # super().on_selection_changed(stage, prim_path, zoom=False)
         # 3. Zoom ke jarak tertentu (misal 500 unit):
         # super().on_selection_changed(stage, prim_path, distance=500.0)
+
+    # 4. Telemetry & Web Dashboard Bridge Hooks:
+    def get_telemetry_payload(self) -> Dict[str, Any]:
+        """Kirim custom metrics level ini ke Web Dashboard (GET /api/telemetry)."""
+        return {
+            "status": "online",
+            "active_prim": self.selected_item or self.root_prim_path
+        }
+
+    def on_telemetry_received(self, data: Dict[str, Any]) -> None:
+        """Terima event / data dari Web Dashboard (POST /api/telemetry)."""
+        print(f"[{self.level_id}] Received telemetry from dashboard:", data)
+        # Contoh reaksi terhadap data alert:
+        # if data.get("alert") == "critical":
+        #     stage = omni.usd.get_context().get_stage()
+        #     self.set_color(stage, self.root_prim_path, "#FF0000")
+

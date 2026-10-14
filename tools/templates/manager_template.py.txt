@@ -19,17 +19,19 @@ import omni.kit.app
 from .context import NavigationContext
 from .base_level import BaseLevelHandler
 from .helpers.selection_helper import SelectionHelper
+from .helpers.telemetry_helper import TelemetryHelper
 
 
 class LevelManager:
     """Central Orchestrator for Multi-Level Navigation."""
 
-    def __init__(self):
+    def __init__(self, enable_telemetry: bool = True, telemetry_port: int = 8089):
         self._handlers: Dict[str, BaseLevelHandler] = {}
         self._active_level_id: Optional[str] = None
         self._context: NavigationContext = NavigationContext(current_level="uninitialized")
         self._is_transitioning: bool = False
         self.selection_helper = SelectionHelper(self)
+        self.telemetry_helper = TelemetryHelper(self, preferred_port=telemetry_port, auto_start=enable_telemetry)
         self._auto_discover_levels()
 
     @property
@@ -143,6 +145,8 @@ class LevelManager:
             self._active_level_id = target_level_id
             try:
                 next_handler.on_enter(stage, self._context)
+                if hasattr(next_handler, "apply_cached_telemetry_if_any"):
+                    next_handler.apply_cached_telemetry_if_any()
                 print(f"[LevelManager] Successfully navigated to '{target_level_id}'")
             except Exception as e:
                 print(f"[LevelManager] Error during on_enter for '{target_level_id}': {e}")
@@ -152,6 +156,13 @@ class LevelManager:
 
     def on_update(self, dt: float) -> None:
         """Called every frame by the extension update event stream."""
+        # Drain background telemetry commands on main thread safely
+        if hasattr(self, "telemetry_helper") and self.telemetry_helper:
+            try:
+                self.telemetry_helper.on_update(dt)
+            except Exception as e:
+                pass
+
         if self._is_transitioning:
             return
 
@@ -170,6 +181,12 @@ class LevelManager:
                 self.active_level.on_exit(stage, "shutdown")
             except Exception:
                 pass
+        if hasattr(self, "telemetry_helper") and self.telemetry_helper:
+            try:
+                self.telemetry_helper.shutdown()
+            except Exception:
+                pass
+            self.telemetry_helper = None
         if hasattr(self, "selection_helper") and self.selection_helper:
             try:
                 self.selection_helper.destroy()

@@ -76,10 +76,20 @@ class {class_name}(BaseLevelHandler):
 
     def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
         self.selected_item = prim_path
-        # 🎯 Pilihan konfigurasi zoom saat klik:
+        # Pilihan konfigurasi zoom saat klik:
         # 1. Mengikuti class property (default):
         super().on_selection_changed(stage, prim_path)
         # 2. Tanpa zoom sama sekali (hanya lock pivot):
         # super().on_selection_changed(stage, prim_path, zoom=False)
         # 3. Zoom ke jarak tertentu (misal 500 unit):
         # super().on_selection_changed(stage, prim_path, distance=500.0)
+
+    # 4. Telemetry & Web Dashboard Bridge Hooks:
+    def get_telemetry_payload(self) -> Dict[str, Any]:
+        """Kirim custom metrics level ini ke Web Dashboard (GET /api/telemetry)."""
+        return {}
+
+    def on_telemetry_received(self, data: Dict[str, Any]) -> None:
+        """Terima event / data dari Web Dashboard (POST /api/telemetry)."""
+        pass
+

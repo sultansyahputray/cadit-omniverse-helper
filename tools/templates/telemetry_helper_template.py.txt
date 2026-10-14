@@ -1,0 +1,341 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+"""
+Telemetry & Web Bridge Helper Engine:
+Provides an embedded, thread-safe HTTP/REST server for bidirectional communication
+between NVIDIA Omniverse Kit SDK and external Web Dashboards / IoT Gateways.
+
+Features:
+1. Thread-safe command queuing from background HTTP threads into Omniverse Kit's main update stream.
+2. Namespaced per-level telemetry ingestion and dispatch (level_id scoping).
+3. Automated aggregation of 3D-to-2D screen projections, active level metadata, and USD selection state.
+4. Automatic port detection and fallback binding (8089 -> 8088 -> 8090 -> 8091 ...).
+5. CORS support for seamless browser integration.
+6. Multi-level telemetry state caching across level transitions.
+"""
+
+import http.server
+import json
+import threading
+import queue
+from typing import Dict, Any, Optional, List
+from urllib.parse import parse_qs, urlparse
+
+import omni.usd
+import omni.kit.app
+
+
+class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
+    """Internal HTTP Handler for Telemetry REST API."""
+
+    helper_ref = None
+
+    def _set_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Level-Id")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(200)
+        self._set_cors_headers()
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+
+        if path in ["/api/telemetry", "/api/status"]:
+            helper = TelemetryHTTPHandler.helper_ref
+            client_aspect = None
+            if parsed_url.query:
+                try:
+                    q = parse_qs(parsed_url.query)
+                    if "aspect" in q:
+                        client_aspect = float(q["aspect"][0])
+                except Exception:
+                    pass
+
+            payload = helper.build_telemetry_payload(client_aspect=client_aspect) if helper else {"status": "uninitialized"}
+            body = json.dumps(payload).encode("utf-8")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_data.decode("utf-8")) if body_data else {}
+        except Exception:
+            body = {}
+
+        header_level_id = self.headers.get("X-Level-Id")
+        helper = TelemetryHTTPHandler.helper_ref
+
+        if not helper:
+            self._send_json_response(503, {"error": "Telemetry helper is not initialized"})
+            return
+
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+
+        if path == "/api/telemetry":
+            target_level = body.get("level_id") or header_level_id
+            data = body.get("data") if "data" in body else body
+            if isinstance(data, dict) and "level_id" in data and "data" not in body:
+                data = {k: v for k, v in data.items() if k != "level_id"}
+
+            res = helper.enqueue_telemetry_ingest(target_level, data)
+            self._send_json_response(200, res)
+
+        elif path == "/api/navigate":
+            target_level = body.get("level") or body.get("level_id")
+            item_id = body.get("item_id") or body.get("target")
+            extra = {k: v for k, v in body.items() if k not in ["level", "level_id", "item_id", "target"]}
+            res = helper.enqueue_navigation(target_level, item_id, extra)
+            self._send_json_response(200, res)
+
+        elif path == "/api/camera":
+            view = body.get("view")
+            action = body.get("action")
+            pivot_to = body.get("pivot_to")
+            distance = body.get("distance")
+            res = helper.enqueue_camera_command(view=view, action=action, pivot_to=pivot_to, distance=distance)
+            self._send_json_response(200, res)
+
+        elif path == "/api/select":
+            prim_path = body.get("prim_path")
+            clear = body.get("clear", False)
+            res = helper.enqueue_selection_command(prim_path=prim_path, clear=clear)
+            self._send_json_response(200, res)
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _send_json_response(self, code: int, data: dict) -> None:
+        resp_bytes = json.dumps(data).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp_bytes)))
+        self._set_cors_headers()
+        self.end_headers()
+        self.wfile.write(resp_bytes)
+
+    def log_message(self, format, *args) -> None:
+        """Suppress standard HTTP request logging to console."""
+        pass
+
+
+class TelemetryHelper:
+    """
+    Telemetry and Web Bridge Helper Engine for NVIDIA Omniverse Kit SDK.
+    Coordinates bidirectional telemetry communication, namespaced routing, and command dispatching.
+    """
+
+    def __init__(self, manager, preferred_port: int = 8089, auto_start: bool = True):
+        self.manager = manager
+        self.preferred_port = preferred_port
+        self.active_port: Optional[int] = None
+        self.client_aspect: Optional[float] = None
+
+        self._httpd: Optional[http.server.HTTPServer] = None
+        self._server_thread: Optional[threading.Thread] = None
+        self._command_queue: queue.Queue = queue.Queue()
+        self._level_cache: Dict[str, dict] = {}
+        self._is_running: bool = False
+
+        if auto_start:
+            self.start_server(self.preferred_port)
+
+    def start_server(self, port: int = 8089) -> bool:
+        """Starts embedded HTTP server on preferred port or fallbacks."""
+        if self._is_running:
+            return True
+
+        TelemetryHTTPHandler.helper_ref = self
+        candidate_ports = [port, 8088, 8090, 8091, 8092, 8093]
+        for p in candidate_ports:
+            try:
+                self._httpd = http.server.HTTPServer(("0.0.0.0", p), TelemetryHTTPHandler)
+                self.active_port = p
+                self._server_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+                self._server_thread.start()
+                self._is_running = True
+                print(f"[TelemetryHelper] REST API Server listening on http://0.0.0.0:{p}")
+                return True
+            except OSError:
+                continue
+
+        print("[TelemetryHelper] Warning: Could not bind HTTP server on candidate ports.")
+        return False
+
+    def shutdown(self) -> None:
+        """Stops the embedded HTTP server and frees the listening port."""
+        self._is_running = False
+        if self._httpd:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            except Exception as e:
+                print(f"[TelemetryHelper] Server shutdown note: {e}")
+            self._httpd = None
+            self._server_thread = None
+        TelemetryHTTPHandler.helper_ref = None
+        print("[TelemetryHelper] Server shutdown complete.")
+
+    def enqueue_telemetry_ingest(self, target_level: Optional[str], data: dict) -> dict:
+        """Enqueues incoming telemetry for execution on main thread."""
+        resolved_level = target_level or (self.manager.active_level.level_id if self.manager.active_level else None)
+
+        if resolved_level:
+            if resolved_level not in self._level_cache:
+                self._level_cache[resolved_level] = {}
+            if isinstance(data, dict):
+                self._level_cache[resolved_level].update(data)
+
+        self._command_queue.put(("telemetry", resolved_level, data))
+        return {
+            "status": "ok",
+            "level_id": resolved_level,
+            "cached": True
+        }
+
+    def enqueue_navigation(self, target_level: Optional[str], item_id: Optional[str], extra: dict) -> dict:
+        """Enqueues level navigation request."""
+        if not target_level:
+            return {"status": "error", "message": "Missing 'level' parameter"}
+        self._command_queue.put(("navigate", target_level, item_id, extra))
+        return {"status": "ok", "target_level": target_level}
+
+    def enqueue_camera_command(self, view: Optional[str] = None, action: Optional[str] = None, pivot_to: Optional[str] = None, distance: Optional[float] = None) -> dict:
+        """Enqueues camera viewpoint/zoom command."""
+        self._command_queue.put(("camera", view, action, pivot_to, distance))
+        return {"status": "ok"}
+
+    def enqueue_selection_command(self, prim_path: Optional[str] = None, clear: bool = False) -> dict:
+        """Enqueues prim selection command."""
+        self._command_queue.put(("select", prim_path, clear))
+        return {"status": "ok"}
+
+    def get_cached_telemetry(self, level_id: str) -> dict:
+        """Returns the latest cached telemetry data for a specified level."""
+        return dict(self._level_cache.get(level_id, {}))
+
+    def clear_cached_telemetry(self, level_id: Optional[str] = None) -> None:
+        """Clears cached telemetry for a specific level or all levels."""
+        if level_id:
+            self._level_cache.pop(level_id, None)
+        else:
+            self._level_cache.clear()
+
+    def build_telemetry_payload(self, client_aspect: Optional[float] = None) -> dict:
+        """
+        Constructs the complete telemetry response envelope.
+        Aggregates active level ID, system status, 2D screen projections, and level data.
+        """
+        if client_aspect is not None:
+            self.client_aspect = client_aspect
+
+        active_handler = self.manager.active_level if self.manager else None
+        active_id = active_handler.level_id if active_handler else (self.manager._active_level_id if self.manager else "uninitialized")
+
+        # 1. Projections
+        projections = {}
+        if active_handler:
+            try:
+                stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+                if stage:
+                    projections = active_handler.get_tracked_screen_positions(stage, client_aspect=self.client_aspect)
+            except Exception as e:
+                projections = {"error": str(e)}
+
+        # 2. System State
+        selected_prim = None
+        if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
+            selected_prim = self.manager.selection_helper.get_selected_prim()
+
+        system_info = {
+            "selected_prim": selected_prim,
+            "registered_levels": self.manager.get_registered_levels() if self.manager else {}
+        }
+
+        # 3. Level-specific Telemetry Data
+        level_data = {}
+        if active_handler:
+            try:
+                level_data = active_handler.get_telemetry_payload() or {}
+            except Exception as e:
+                level_data = {"error": str(e)}
+
+        return {
+            "status": "ok",
+            "active_level": active_id,
+            "system": system_info,
+            "projections": projections,
+            "level_telemetry": {
+                "level_id": active_id,
+                "data": level_data
+            }
+        }
+
+    def on_update(self, dt: float) -> None:
+        """
+        Drains command queue on the main Omniverse thread.
+        Guarantees thread-safe execution of USD Stage and Kit API modifications.
+        """
+        processed_count = 0
+        max_commands_per_frame = 30
+
+        while not self._command_queue.empty() and processed_count < max_commands_per_frame:
+            try:
+                cmd = self._command_queue.get_nowait()
+                cmd_type = cmd[0]
+
+                if cmd_type == "telemetry":
+                    _, target_level, data = cmd
+                    active_handler = self.manager.active_level
+                    if active_handler and (target_level is None or active_handler.level_id == target_level):
+                        try:
+                            active_handler.on_telemetry_received(data)
+                        except Exception as err:
+                            print(f"[TelemetryHelper] Error dispatching on_telemetry_received to '{active_handler.level_id}': {err}")
+
+                elif cmd_type == "navigate":
+                    _, target_level, item_id, extra = cmd
+                    self.manager.navigate_to(target_level, item_id, **extra)
+
+                elif cmd_type == "camera":
+                    _, view, action, pivot_to, distance = cmd
+                    stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+                    if stage and self.manager.active_level:
+                        cam = self.manager.active_level.camera_helper
+                        if view:
+                            cam.set_camera_view(stage, view, distance=distance)
+                        if pivot_to:
+                            cam.set_camera_pivot_to_object(stage, pivot_to, distance=distance)
+                        if action == "zoom_in":
+                            cam.camera_zoom_in(stage)
+                        elif action == "zoom_out":
+                            cam.camera_zoom_out(stage)
+
+                elif cmd_type == "select":
+                    _, prim_path, clear = cmd
+                    if self.manager and hasattr(self.manager, "selection_helper") and self.manager.selection_helper:
+                        if clear:
+                            self.manager.selection_helper.clear_selection()
+                        elif prim_path:
+                            self.manager.selection_helper.set_selection(prim_path)
+
+                processed_count += 1
+            except queue.Empty:
+                break
+            except Exception as e:
+                print(f"[TelemetryHelper] Error executing command: {e}")
