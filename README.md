@@ -50,9 +50,184 @@ OpenUSD (`pxr.Usd`) and Omniverse Kit core subsystems require mutations to execu
 
 ---
 
-## 2. Core Helper Engines Specification
+## 2. End-to-End Getting Started Guide (From Zero to First Launch)
 
-### 2.1 Telemetry and Web Bridge Helper (`TelemetryHelper`)
+This step-by-step walkthrough guides you through setting up a complete digital twin project starting from an empty directory up to your first running multi-level scene.
+
+### Step 1: Clone NVIDIA Kit App Template (Version 110.3.0)
+
+Begin by cloning the official NVIDIA `kit-app-template` repository at tag `110.3.0`:
+
+```bash
+git clone -b 110.3.0 https://github.com/NVIDIA-Omniverse/kit-app-template.git my-omniverse-project
+cd my-omniverse-project
+```
+
+### Step 2: Create Initial Application and Extension
+
+Use the built-in repository wizard to scaffold your base application and Python extension.
+
+#### 2a. Create the Application:
+Run the template creation wizard:
+
+* **Windows:**
+  ```cmd
+  .\repo.bat template new
+  ```
+* **Linux:**
+  ```bash
+  ./repo.sh template new
+  ```
+
+Follow the interactive prompts:
+* Select item to create: **Application**
+* Select desired template: **Kit Base Editor** (or **USD Viewer**)
+* Enter name of application `.kit` file: `company.my_app` (lowercase, name-spaced)
+* Enter application display name: `My Digital Twin App`
+* Enter version: `0.1.0`
+* Add application layers: **No**
+
+This generates the base application configuration at `source/apps/company.my_app.kit`.
+
+#### 2b. Create the Extension:
+Run the wizard again to scaffold the backend Python extension:
+
+* **Windows:**
+  ```cmd
+  .\repo.bat template new
+  ```
+* **Linux:**
+  ```bash
+  ./repo.sh template new
+  ```
+
+Follow the interactive prompts:
+* Select item to create: **Extension**
+* Select desired template: **Python UI** (or **Basic Python**)
+* Enter extension name: `company.my_extension` (e.g., `cadit.backend_modular_project`)
+* Enter display name: `Backend Modular Extension`
+* Enter version: `0.1.0`
+
+This generates the extension source tree under `source/extensions/company.my_extension/`.
+
+#### 2c. Run Initial Validation Build:
+Execute the build command to pull the Omniverse Kit SDK dependencies and verify the toolchain:
+
+* **Windows:**
+  ```cmd
+  .\repo.bat build
+  ```
+* **Linux:**
+  ```bash
+  ./repo.sh build
+  ```
+
+Confirm that the output concludes with `BUILD (RELEASE) SUCCEEDED`.
+
+---
+
+### Step 3: Clone CADIT Omniverse Helper into Project Root
+
+Clone the `cadit-omniverse-helper` repository directly into your project root:
+
+```bash
+git clone https://github.com/sultansyahputray/cadit-omniverse-helper.git
+```
+
+Your workspace layout will now appear as follows:
+```
+my-omniverse-project/
+├── source/
+│   ├── apps/
+│   │   └── company.my_app.kit
+│   └── extensions/
+│       └── company.my_extension/
+├── cadit-omniverse-helper/
+│   ├── example_map/
+│   │   ├── main_map.usd
+│   │   └── level_02_map.usd
+│   ├── tools/
+│   ├── init_framework.bat
+│   └── README.md
+├── repo.bat
+├── repo.sh
+└── premake5.lua
+```
+
+---
+
+### Step 4: Initialize the Helper Framework
+
+Run the initialization script targeting your newly created extension:
+
+* **Windows:**
+  ```cmd
+  .\cadit-omniverse-helper\init_framework.bat company.my_extension
+  ```
+* **Linux / Bash:**
+  ```bash
+  ./cadit-omniverse-helper/init_framework.sh company.my_extension
+  ```
+*(Note: If only one extension is present in `source/extensions/`, executing `.\cadit-omniverse-helper\init_framework.bat` without arguments will automatically discover and target it).*
+
+#### What Framework Initialization Generates:
+1. **Core Engines** (`source/extensions/company.my_extension/company/my_extension/core/`):
+   * `base_level.py`: Abstract base class providing helper methods and lifecycle hooks.
+   * `context.py`: Multi-level navigation context and state carrier.
+   * `manager.py`: LevelManager orchestrator with auto-discovery and asynchronous stage loader.
+   * `helpers/`: VisibilityHelper, ProjectionHelper, ColorHelper, CameraHelper, SelectionHelper, and TelemetryHelper.
+2. **Dual Starter Levels** (`source/extensions/company.my_extension/company/my_extension/levels/`):
+   * `level_01_default.py`: Pre-configured to load `cadit-omniverse-helper/example_map/main_map.usd` as Level 1.
+   * `level_02.py`: Pre-configured to load `cadit-omniverse-helper/example_map/level_02_map.usd` as Level 2.
+   * Both handlers contain comprehensive, commented-out usage examples for each helper engine.
+3. **Extension Lifecycle Integration** (`source/extensions/company.my_extension/company/my_extension/extension.py`):
+   * Wires `LevelManager`, starts the background REST telemetry daemon, and hooks the 60 FPS update stream.
+4. **Dedicated WebRTC Streaming Profile** (`source/apps/cadit.web_view_only.kit`):
+   * A clean, viewport-only streaming application definition optimized for web dashboards.
+5. **Project Root CLI Shortcuts**:
+   * `add.bat <level_id>`: Generates new level handlers pre-wired with helper examples.
+   * `list_levels.bat`: Scans and displays all registered levels.
+   * `launch_web_view.bat`: Launches the dedicated streaming application.
+
+---
+
+### Step 5: Build and Run for the First Time
+
+#### 5a. Build Project:
+Rebuild your workspace to register the extension components:
+```cmd
+.\repo.bat build
+```
+
+#### 5b. Option A - Launch in Omniverse Editor Mode (Desktop GUI):
+To inspect and edit the 3D environment with full authoring tools:
+```cmd
+.\repo.bat launch
+```
+1. Select your application when prompted (e.g., `company.my_app`).
+2. Note that the initial launch may take several minutes to compile GPU shaders.
+3. Once the viewport displays:
+   * The Level 1 map (`main_map.usd`) is loaded automatically.
+   * The in-viewport **Level Navigator** overlay displays "Level 1 (Default Overview)" and "Level 2".
+   * Clicking "Level 2" smoothly navigates to `level_02_map.usd`.
+
+#### 5c. Option B - Launch in WebRTC Streaming Mode (for Web Dashboard):
+To run Omniverse Kit as a lightweight, headless streaming server:
+```cmd
+.\launch_web_view.bat
+```
+* The WebRTC video streaming server will bind to signaling port `49100`.
+* The embedded REST telemetry server will bind to HTTP port `8089`.
+* Verify that telemetry is active by opening `http://localhost:8089/api/telemetry` in a web browser or using curl:
+  ```bash
+  curl http://localhost:8089/api/telemetry
+  ```
+
+---
+
+## 3. Core Helper Engines Specification
+
+### 3.1 Telemetry and Web Bridge Helper (`TelemetryHelper`)
 An embedded HTTP daemon facilitating real-time telemetry streaming and command execution between Omniverse and external web applications (React, Next.js, Vue, Three.js).
 
 #### Key Capabilities:
@@ -185,7 +360,7 @@ Or to clear selection:
 
 ---
 
-### 2.2 Projection Helper Engine (`ProjectionHelper`)
+### 3.2 Projection Helper Engine (`ProjectionHelper`)
 Transforms 3D USD world coordinates into normalized 2D viewport screen percentages (`0.0%` to `100.0%`), enabling HTML, SVG, and React UI overlays to align with 3D objects.
 
 #### Technical Specifications:
@@ -210,7 +385,7 @@ positions = self.get_tracked_screen_positions(stage, client_aspect=1.777)
 
 ---
 
-### 2.3 Color and Emissive Glow Engine (`ColorHelper`)
+### 3.3 Color and Emissive Glow Engine (`ColorHelper`)
 Applies diffuse colors, emissive glow materials, and pulsing status effects dynamically without modifying underlying USD files on disk.
 
 #### Technical Specifications:
@@ -247,7 +422,7 @@ self.restore_all_colors(stage)
 
 ---
 
-### 2.4 Visibility Helper Engine (`VisibilityHelper`)
+### 3.4 Visibility Helper Engine (`VisibilityHelper`)
 Provides non-destructive visibility toggling and automated perspective cutaways.
 
 #### Technical Specifications:
@@ -276,7 +451,7 @@ self.show_objects(stage, ["/World/InternalMachinery"])
 
 ---
 
-### 2.5 Camera Navigation and Smooth Glide Engine (`CameraHelper`)
+### 3.5 Camera Navigation and Smooth Glide Engine (`CameraHelper`)
 Provides deterministic viewport camera positioning with quintic smootherstep interpolation.
 
 #### Technical Specifications:
@@ -305,7 +480,7 @@ self.camera_zoom_in(stage, factor=0.8)
 
 ---
 
-### 2.6 Selection Helper Engine (`SelectionHelper`)
+### 3.6 Selection Helper Engine (`SelectionHelper`)
 Maintains synchronization between Omniverse viewport interactions and application code.
 
 #### Technical Specifications:
@@ -327,7 +502,7 @@ self.clear_selection()
 
 ---
 
-### 2.7 Metadata and Material Introspection Engine (`get_prim_metadata`)
+### 3.7 Metadata and Material Introspection Engine (`get_prim_metadata`)
 Extracts prim metadata, bound materials, bounding dimensions, and custom attributes into standard Python dictionaries and serialized JSON.
 
 #### Python Usage:
@@ -353,7 +528,7 @@ metadata = self.get_prim_metadata(stage, "/World/Equipment/Pump")
 
 ---
 
-## 3. Bundled Example Maps (`example_map`)
+## 4. Bundled Example Maps (`example_map`)
 
 The repository includes a ready-to-use map directory at `cadit-omniverse-helper/example_map/` to facilitate immediate testing of multi-level transitions:
 
@@ -364,7 +539,7 @@ When `LevelManager` initiates a transition (`navigate_to("level_02")`), it resol
 
 ---
 
-## 4. Production Level Handler Implementation (`BaseLevelHandler`)
+## 5. Production Level Handler Implementation (`BaseLevelHandler`)
 
 Below is the clean production implementation pattern used by both `level_01_default.py` and `level_02.py`:
 
@@ -438,7 +613,7 @@ class Level01DefaultHandler(BaseLevelHandler):
 
 ---
 
-## 5. Web Frontend Integration Guide
+## 6. Web Frontend Integration Guide
 
 A React / TypeScript hook implementation connecting to the `TelemetryHelper` daemon:
 
@@ -502,7 +677,7 @@ export function useOmniverseBridge(baseUrl: string = "http://localhost:8089", in
 
 ---
 
-## 6. Developer CLI Automation Workflow
+## 7. Developer CLI Automation Workflow
 
 The toolkit includes the `dev_tools.py` automation suite, accessible through root batch scripts:
 
@@ -532,7 +707,7 @@ Launches Omniverse Kit using the dedicated Web View streaming profile (`cadit.we
 
 ---
 
-## 7. License and Copyright
+## 8. License and Copyright
 
 Copyright (c) 2026 CADIT. All rights reserved.
 Developed for enterprise digital twin applications powered by the NVIDIA Omniverse Kit SDK.
