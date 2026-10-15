@@ -131,7 +131,7 @@ class CameraHelper:
                 ("projection", Sdf.ValueTypeNames.Token, "perspective"),
                 ("focalLength", Sdf.ValueTypeNames.Float, float(focal_length)),
                 ("focusDistance", Sdf.ValueTypeNames.Float, float(dist)),
-                ("clippingRange", Sdf.ValueTypeNames.Vec2f, Gf.Vec2f(1.0, 10000000.0)),
+                ("clippingRange", Sdf.ValueTypeNames.Float2, Gf.Vec2f(1.0, 10000000.0)),
                 ("centerOfInterest", Sdf.ValueTypeNames.Float, float(dist)),
                 ("camera:lock", Sdf.ValueTypeNames.Bool, False),
                 ("omni:kit:camera:lock", Sdf.ValueTypeNames.Bool, False),
