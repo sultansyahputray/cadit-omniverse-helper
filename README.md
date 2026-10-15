@@ -2,169 +2,165 @@
 
 ## Modular Multi-Level Architecture and Automation Toolkit for NVIDIA Omniverse Kit SDK
 
-CADIT Omniverse Helper adalah kerangka kerja modular enterprise yang dirancang untuk standardisasi pengembangan aplikasi digital twin berbasis NVIDIA Omniverse Kit SDK. Toolkit ini menyediakan orkestrasi arsitektur multi-level, isolasi modifikasi layer USD non-destruktif, komputasi proyeksi koordinat 3D-ke-2D, serta jembatan komunikasi telemetri dua arah yang thread-safe dengan web dashboard eksternal.
+CADIT Omniverse Helper is an enterprise-grade modular framework designed to standardize and accelerate the development of digital twin applications on the NVIDIA Omniverse Kit SDK. The toolkit provides multi-level scene orchestration, non-destructive USD SessionLayer overrides, 3D-to-2D screen projection mathematics, and a thread-safe bidirectional telemetry bridge to external web dashboards and IoT platforms.
 
 ---
 
-## 1. Arsitektur Sistem dan Model Konkurensi
+## 1. System Architecture and Concurrency Model
 
-Toolkit ini membagi tanggung jawab arsitektural menjadi tiga layer utama:
+The toolkit organizes application responsibilities into three distinct architectural layers:
 
 ```
 +-----------------------------------------------------------------------------------+
 |                           External Web Dashboard / IoT                            |
 +-----------------------------------------------------------------------------------+
-         | GET /api/telemetry (Status, Projections, Level Metrics)
-         | POST /api/telemetry (Sensor Data, Alerts, External State)
+         | GET /api/telemetry (System Status, 2D Projections, Level Metrics)
+         | POST /api/telemetry (Sensor Data, Alarms, External State)
          v POST /api/navigate, /api/camera, /api/select
 +-----------------------------------------------------------------------------------+
 |                        CADIT Omniverse Helper Core                                |
 |                                                                                   |
 |  [ TelemetryHelper Server ]                                                       |
-|  - Embedded HTTP Server (Port 8089 dengan fallback 8088, 8090...)                 |
-|  - Thread-Safe Command Queue (Mencegah thread collision pada USD Stage)           |
-|  - State Caching per Level ID                                                     |
+|  - Embedded HTTP Daemon (Port 8089 with auto-fallback to 8088, 8090, 8091...)      |
+|  - Thread-Safe Command Queue (Guarantees USD Stage thread safety)                 |
+|  - Per-Level Ingress State Caching                                                |
 |                                                                                   |
 |  [ LevelManager Orchestrator ]                                                    |
-|  - Dynamic Auto-Discovery seluruh subclass BaseLevelHandler                       |
+|  - Dynamic Auto-Discovery of BaseLevelHandler Subclasses                          |
 |  - Asynchronous USD Stage Switching (open_stage_async)                            |
-|  - Context Tracking (History, Active Level, Previous Level)                       |
-|  - Frame-Rate Dispatcher (60 FPS Update Loop)                                     |
+|  - Context and Transition Tracking (Active, Previous, Selection History)          |
+|  - Frame-Rate Dispatcher (60 FPS Update Loop Subscription)                        |
 +-----------------------------------------------------------------------------------+
 |                           Level Handlers & Engines                                |
 |                                                                                   |
 |  BaseLevelHandler Subclasses:                                                     |
-|  - level_01_default.py, level_02_room.py, level_03_rack.py, ...                   |
+|  - level_01_default.py, level_02.py, level_03_detail.py, ...                      |
 |                                                                                   |
-|  Dedicated Helper Engines:                                                        |
+|  Specialized Helper Engines:                                                      |
 |  - VisibilityHelper: Dynamic perspective cutaway & non-destructive hiding        |
-|  - ProjectionHelper: Frustum projection 3D-ke-2D dengan dirty-check caching      |
-|  - ColorHelper: Direct color injection pada USD SessionLayer                      |
-|  - CameraHelper: Pivot-locked navigation & ViewCube presets                       |
-|  - SelectionHelper: USD viewport selection synchronizer                           |
+|  - ProjectionHelper: 3D-to-2D frustum projection with dirty-check caching         |
+|  - ColorHelper: Direct color and emissive glow injection on USD SessionLayer      |
+|  - CameraHelper: Pivot-locked navigation, ViewCube presets & smooth glide         |
+|  - SelectionHelper: Viewport selection event stream synchronizer                  |
 +-----------------------------------------------------------------------------------+
 ```
 
-### Model Thread-Safety (USD Stage vs HTTP Worker Thread)
-API OpenUSD (`pxr.Usd`) dan subsistem Omniverse Kit tidak dirancang untuk akses konkuren dari thread arbitrer. Request HTTP masuk melalui thread latar belakang (`threading.Thread`). `TelemetryHelper` memasukkan seluruh request mutasi ke dalam antrean aman (`queue.Queue`), yang kemudian diproses secara sinkron pada main thread Omniverse melalui `on_update(dt)` subscription stream Kit.
+### Thread-Safety Model (USD Stage vs. HTTP Worker Thread)
+OpenUSD (`pxr.Usd`) and Omniverse Kit core subsystems require mutations to execute on the application main thread. Incoming HTTP requests arrive on background worker threads (`threading.Thread`). `TelemetryHelper` places all stage mutation requests into a thread-safe queue (`queue.Queue`), which is drained and executed synchronously on the Kit main thread inside the extension `on_update(dt)` subscription stream.
 
 ---
 
-## 2. Spesifikasi Helper Engine
+## 2. Core Helper Engines Specification
 
 ### 2.1 Telemetry and Web Bridge Helper (`TelemetryHelper`)
-Menyediakan server REST API embedded yang menghubungkan status internal Omniverse dengan Web Dashboard (React, Vue, Three.js) dan sistem IoT eksternal.
+An embedded HTTP daemon facilitating real-time telemetry streaming and command execution between Omniverse and external web applications (React, Next.js, Vue, Three.js).
 
-#### Fitur Utama:
-* **Auto-Port Binding:** Mencoba port 8089 secara default; jika port terpakai, otomatis mencoba port 8088, 8090, 8091, 8092, dan 8093.
-* **CORS Support:** Header `Access-Control-Allow-Origin: *` aktif untuk seluruh request.
-* **Namespaced Level Routing:** Routing data telemetri otomatis ke handler level yang dituju berdasarkan `level_id`.
-* **State Caching:** Telemetri yang masuk untuk level yang sedang tidak aktif disimpan dalam memori dan otomatis dikirimkan saat level tersebut dibuka (`on_enter`).
+#### Key Capabilities:
+* **Automatic Port Fallback:** Binds to port `8089` by default. If the port is in use, it gracefully falls back through `8088`, `8090`, `8091`, `8092`, and `8093`.
+* **CORS Support:** Sends `Access-Control-Allow-Origin: *` headers on all responses.
+* **Namespaced Routing:** Routes incoming payloads to the designated level handler based on `level_id`.
+* **State Caching:** Telemetry delivered for inactive levels is held in memory and dispatched immediately upon level activation (`on_enter`).
 
-#### Spesifikasi REST API Endpoints:
+#### REST API Endpoints Specification:
 
-##### Endpoint: `GET /api/telemetry` atau `GET /api/status`
-Mengambil status sistem, proyeksi koordinat 2D, dan telemetri level yang sedang aktif.
+##### Endpoint: `GET /api/telemetry` or `GET /api/status`
+Retrieves system status, 2D screen coordinate projections, and active level telemetry.
 
-* **Query Parameters (Opsional):**
-  * `aspect` (float): Rasio aspek viewport klien (contoh: `1.7777` untuk 16:9).
-* **Format Response JSON:**
+* **Query Parameters (Optional):**
+  * `aspect` (float): Client viewport aspect ratio (e.g., `1.777` for 16:9).
+* **Response Payload (JSON):**
 ```json
 {
   "status": "ok",
-  "active_level": "level_02_room",
+  "active_level": "level_01_default",
   "system": {
-    "selected_prim": "/World/Room/Rack_01",
+    "selected_prim": "/World/MainBuilding",
     "registered_levels": {
       "level_01_default": "Level 1 (Default Overview)",
-      "level_02_room": "Room Overview"
+      "level_02": "Level 2"
     }
   },
   "projections": {
-    "rack_01": {
-      "x": 45.2,
-      "y": 62.8,
-      "visible": true
-    },
-    "chiller_01": {
-      "x": 78.4,
-      "y": 30.1,
+    "root_overview": {
+      "x": 50.0,
+      "y": 42.5,
+      "width": 12.4,
       "visible": true
     }
   },
   "level_telemetry": {
-    "level_id": "level_02_room",
+    "level_id": "level_01_default",
     "data": {
-      "ambient_temperature": 22.4,
-      "chiller_power_kw": 45.0,
-      "fire_alarm_active": false
+      "status": "online",
+      "active_prim": "/World"
     }
   }
 }
 ```
 
 ##### Endpoint: `POST /api/telemetry`
-Mengirimkan data telemetri atau alert eksternal ke dalam Omniverse.
+Transmits sensor data, alert states, or command payloads from the web dashboard into Omniverse.
 
 * **Request Headers:**
   * `Content-Type: application/json`
-  * `X-Level-Id: <level_id>` *(Opsional jika level_id dicantumkan pada body)*
-* **Request Body JSON:**
+  * `X-Level-Id: <level_id>` *(Optional if specified in JSON body)*
+* **Request Payload (JSON):**
 ```json
 {
-  "level_id": "level_02_room",
+  "level_id": "level_01_default",
   "data": {
-    "rack_01_status": "warning",
-    "target_temperature": 20.5
+    "command": "highlight_alert",
+    "target_prim": "/World/Pump_01"
   }
 }
 ```
-*Catatan:* Jika `level_id` tidak disertakan, data otomatis dialokasikan ke level yang sedang aktif saat ini.
-* **Response JSON:**
+* **Response Payload (JSON):**
 ```json
 {
   "status": "ok",
-  "level_id": "level_02_room",
-  "cached": true
+  "level_id": "level_01_default",
+  "cached": false
 }
 ```
 
 ##### Endpoint: `POST /api/navigate`
-Memicu transisi level dari remote dashboard.
+Triggers an asynchronous level transition from the remote dashboard.
 
-* **Request Body JSON:**
+* **Request Payload (JSON):**
 ```json
 {
-  "level": "level_02_room",
-  "item_id": "rack_01"
+  "level": "level_02",
+  "item_id": "pump_01"
 }
 ```
-* **Response JSON:**
+* **Response Payload (JSON):**
 ```json
 {
   "status": "ok",
-  "target_level": "level_02_room"
+  "target_level": "level_02"
 }
 ```
 
 ##### Endpoint: `POST /api/camera`
-Mengatur sudut pandang kamera atau level zoom viewport.
+Controls viewport camera orientation, framing, and zoom factors.
 
-* **Request Body JSON (Pilihan Parameter):**
+* **Request Payload (JSON) Options:**
 ```json
 {
   "view": "iso",
-  "distance": 1200.0
+  "distance": 1200.0,
+  "smooth": true,
+  "duration": 1.0
 }
 ```
-Atau untuk framing objek:
+To frame a specific object:
 ```json
 {
-  "pivot_to": "/World/Room/Rack_01",
-  "distance": 400.0
+  "pivot_to": "/World/Equipment/Chiller_01",
+  "distance": 500.0
 }
 ```
-Atau untuk zoom bertahap:
+To perform incremental zoom:
 ```json
 {
   "action": "zoom_in"
@@ -172,15 +168,15 @@ Atau untuk zoom bertahap:
 ```
 
 ##### Endpoint: `POST /api/select`
-Mengatur atau menghapus prim yang terseleksi di viewport.
+Selects or deselects USD prims in the active viewport.
 
-* **Request Body JSON:**
+* **Request Payload (JSON):**
 ```json
 {
-  "prim_path": "/World/Room/Rack_01"
+  "prim_path": "/World/Equipment/Chiller_01"
 }
 ```
-Atau untuk menghapus seleksi:
+Or to clear selection:
 ```json
 {
   "clear": true
@@ -190,181 +186,187 @@ Atau untuk menghapus seleksi:
 ---
 
 ### 2.2 Projection Helper Engine (`ProjectionHelper`)
-Menghitung transformasi koordinat ruang 3D dunia ke ruang layar 2D (0.0% hingga 100.0% viewport) untuk disajikan sebagai overlay HTML/SVG/Canvas pada web dashboard.
+Transforms 3D USD world coordinates into normalized 2D viewport screen percentages (`0.0%` to `100.0%`), enabling HTML, SVG, and React UI overlays to align with 3D objects.
 
-#### Spesifikasi Teknis:
-* **Frustum Math:** Menggunakan matriks `ViewProjection` kamera aktif di viewport.
-* **Dirty-Check Caching:** Jika matriks posisi kamera dan rasio aspek tidak mengalami perubahan, helper menggunakan nilai cache tanpa kalkulasi ulang (0% pemakaian CPU frame).
-* **Behind-Camera Clipping:** Objek yang berada di belakang bidang potong kamera (*near clipping plane*) secara otomatis ditandai dengan `"visible": false`.
+#### Technical Specifications:
+* **Frustum Math:** Evaluates active viewport camera view-projection matrices.
+* **Dirty-Check Caching:** If camera position, orientation, and client aspect ratio have not changed, cached coordinates are returned with zero frame-time overhead.
+* **Near-Plane Clipping:** Objects located behind the camera near plane are flagged with `"visible": false`.
+* **Projected Bounding Width:** Computes screen-space bounding percentage (`width`) to drive dynamic perspective zoom scaling on web tags.
 
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-# Registrasi objek yang ingin diproyeksikan pada level handler:
+# Static tracking defined in class body:
 tracked_objects = {
-    "rack_01": "/World/Room/Rack_01",
-    "chiller_01": "/World/Room/Chiller_01"
+    "main_unit": "/World/MainUnit"
 }
 
-# Mendapatkan posisi 2D:
+# Dynamic tracking registered at runtime:
+self.track_object("sensor_01", "/World/Sensors/Sensor_01", compute_bounds=True, anchor_point="top_center")
+
+# Query screen coordinates:
 positions = self.get_tracked_screen_positions(stage, client_aspect=1.777)
-# Hasil:
-# {
-#     "rack_01": {"x": 52.3, "y": 44.1, "visible": True},
-#     "chiller_01": {"x": 80.1, "y": 20.0, "visible": False}
-# }
 ```
 
 ---
 
-### 2.3 Direct Color, Emissive Glow, and Flow FX Engine (`ColorHelper`)
-Mengubah material diffuse color, memancarkan efek pendaran cahaya (emissive glow), dan menghasilkan animasi pulsasi aliran (flow pulsing FX) pada prim secara dinamis tanpa mengubah file USD master di disk.
+### 2.3 Color and Emissive Glow Engine (`ColorHelper`)
+Applies diffuse colors, emissive glow materials, and pulsing status effects dynamically without modifying underlying USD files on disk.
 
-#### Spesifikasi Teknis:
-* **SessionLayer Overrides:** Seluruh modifikasi warna dan material diaplikasikan pada `stage.GetSessionLayer()`. Asset master USD tetap bersih dari modifikasi runtime.
-* **Format Warna Fleksibel:**
-  * Hex String: `"#FF0000"`, `"#00E5FF"`, `"#888"`
-  * Tuple RGB Float (0.0 - 1.0): `(1.0, 0.0, 0.0)`
-  * Tuple RGB Int (0 - 255): `(255, 0, 0)`
-* **Integrated Emissive Glow:**
-  * Mendukung parameter `glow=True` dengan intensitas emisi kustom (`glow_intensity=3000.0` hingga `6000.0`).
-  * Otomatis mengaktifkan post-processing RTX Bloom (`/rtx/post/bloom/enabled`) di Omniverse Kit tanpa konfigurasi render manual.
-* **Sinusoidal Pulsing / Flow FX:**
-  * Mendukung animasi denyut/aliran dinamis (`pulse=True`, `pulse_speed=1.5`) yang diperbarui secara otomatis pada loop frame. Cocok untuk visualisasi pipa MEP (listrik, pendingin) dan status darurat.
-* **Recursive Submesh Traversal:** Otomatis menelusuri seluruh anak geometri (`UsdGeom.Mesh`, `UsdGeom.Subset`) di bawah root prim target.
-* **State Restoration:** Menyimpan status material awal sebelum diubah, dan menyediakan method pemulihan total saat level ditinggalkan (`restore_all_colors`).
+#### Technical Specifications:
+* **SessionLayer Overrides:** All edits are applied to `stage.GetSessionLayer()`. Master USD stage assets remain untouched.
+* **Supported Color Formats:**
+  * Hex strings: `"#00FFCC"`, `"#FF0000"`, `"#888"`
+  * RGB float tuples `(0.0, 1.0, 0.5)`
+  * RGB integer tuples `(0, 255, 128)`
+* **Integrated Emissive Glow:** Enables RTX Bloom post-processing automatically (`/rtx/post/bloom/enabled`) and injects emissive shaders.
+* **Sinusoidal Flow & Pulsing FX:** Provides dynamic breathing glow animations (`pulse=True`, `pulse_speed=1.5`) evaluated on the frame loop for alarms and fluid flows.
+* **Recursive Submesh Traversal:** Automatically binds overrides across child `UsdGeom.Mesh` and `UsdGeom.Subset` instances.
+* **Complete State Restoration:** Tracks pre-modification states and restores original materials upon exit (`restore_all_colors`).
 
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-# 1. Memberikan warna standar (diffuse):
-self.set_color(stage, "/World/Room/Rack_01", "#00FF88")
+# 1. Apply solid diffuse color:
+self.set_color(stage, "/World/Equipment/Pump", "#00FF88")
 
-# 2. Memberikan efek pendaran cahaya (emissive glow) pada pipa:
-self.set_glow(stage, "/World/Pipes/Cooling_Inlet", color="#00E5FF", intensity=5000.0)
+# 2. Apply emissive glow:
+self.set_glow(stage, "/World/Pipes/Cooling", color="#00E5FF", intensity=3500.0)
 
-# 3. Warna berpendar dengan denyut pulsasi (Flow FX atau status bahaya):
-self.set_color(stage, "/World/Alarms/Beacon_01", "#FF2200", glow=True, pulse=True, pulse_speed=2.0)
+# 3. Apply pulsing alarm effect:
+self.set_glow(stage, "/World/Alarms/Beacon", color="#FF2200", intensity=5000.0, pulse=True, pulse_speed=2.0)
 
-# 4. Pemulihan ke kondisi awal:
+# 4. Batch color multiple objects:
+self.set_colors(stage, {
+    "/World/Unit_A": "#00FF00",
+    "/World/Unit_B": "#FFB300"
+})
+
+# 5. Restore original colors:
 self.restore_all_colors(stage)
 ```
 
 ---
 
 ### 2.4 Visibility Helper Engine (`VisibilityHelper`)
-Mengatur visibilitas prim geometri secara dinamis dan non-destruktif.
+Provides non-destructive visibility toggling and automated perspective cutaways.
 
-#### Spesifikasi Teknis:
-* **Static Hiding:** Menyembunyikan objek tertentu menggunakan API `UsdGeom.Imageable(prim).MakeInvisible()`.
-* **Dynamic Perspective Cutaway:** Menghitung sudut dot product antara vektor normal bidang dinding dengan vektor pandang kamera secara real-time pada 60 FPS. Dinding yang menghalangi pandangan kamera otomatis menjadi transparan/hilang.
-* **Non-Destructive Restoration:** Seluruh perubahan visibilitas dikembalikan ke status awal via `restore_all_visibility(stage)`.
+#### Technical Specifications:
+* **Non-Destructive Hiding:** Uses `UsdGeom.Imageable(prim).MakeInvisible()` tracked on the session layer.
+* **Dynamic Perspective Cutaway:** Computes the dot product between wall surface normals and camera view vectors in real time (60 FPS). Walls obstructing the line of sight are hidden automatically.
+* **Complete Restoration:** Resets all modified visibilities upon level transition via `restore_all_visibility(stage)`.
 
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-# 1. Registrasi dinding untuk dynamic cutaway:
+# 1. Register cutaway walls:
 self.register_cutaway_walls({
-    "north_wall": {"path": "/World/Room/Wall_North", "normal": (0, 1, 0)},
-    "south_wall": {"path": "/World/Room/Wall_South", "normal": (0, -1, 0)},
-    "east_wall":  {"path": "/World/Room/Wall_East",  "normal": (1, 0, 0)},
-    "west_wall":  {"path": "/World/Room/Wall_West",  "normal": (-1, 0, 0)}
+    "wall_north": {"path": "/World/Room/Wall_North", "normal": (0, 1, 0)},
+    "wall_south": {"path": "/World/Room/Wall_South", "normal": (0, -1, 0)},
+    "wall_east":  {"path": "/World/Room/Wall_East",  "normal": (1, 0, 0)},
+    "wall_west":  {"path": "/World/Room/Wall_West",  "normal": (-1, 0, 0)}
 })
 
-# 2. Update rutin pada loop frame (on_update):
+# 2. Update cutaway orientation in frame update loop:
 def on_update(self, stage: Usd.Stage, dt: float) -> None:
     self.update_perspective_cutaway(stage, center=(0.0, 0.0, 0.0), dot_threshold=0.15)
+
+# 3. Explicit hide and show:
+self.hide_objects(stage, ["/World/Roof", "/World/Ceiling"])
+self.show_objects(stage, ["/World/InternalMachinery"])
 ```
 
 ---
 
-### 2.5 Camera Navigation, ViewCube, and Smooth Glide Engine (`CameraHelper`)
-Menyediakan kendali navigasi kamera viewport yang terukur, deterministik, dan dilengkapi transisi sinematik halus (*smooth glide interpolation*).
+### 2.5 Camera Navigation and Smooth Glide Engine (`CameraHelper`)
+Provides deterministic viewport camera positioning with quintic smootherstep interpolation.
 
-#### Spesifikasi Teknis:
-* **Tumble Cursor Lockdown:** Mematikan opsi `tumbleAtCursor` Kit agar kamera tidak meloncat ke sembarang titik koordinat saat rotasi kursor dilakukan.
-* **Industry-Standard ViewCube Presets:** Menyediakan sudut pandang ortogonal dan isometrik:
-  * `"iso"`: Sudut isometrik standar CAD (azimuth 45°, elevasi 35.264°).
-  * `"top"` / `"bottom"`: Pandangan atas dan bawah.
-  * `"front"` / `"back"`: Pandangan depan dan belakang.
-  * `"left"` / `"right"`: Pandangan samping kiri dan kanan.
-* **Built-in Smooth Cinematic Glide (Interpolation):**
-  * Setiap perubahan sudut pandang, framing objek, atau transisi level otomatis meluncur halus (*glide*) menggunakan kurva interpolasi *quintic smootherstep* (`6t^5 - 15t^4 + 10t^3`) yang menghilangkan sentakan percepatan dan perlambatan.
-  * Parameter `smooth=True` (default) dan `duration=1.0` detik.
-  * Dapat dinonaktifkan secara instan kapan saja menggunakan parameter `smooth=False` atau `duration=0.0`.
-* **Object Pivot Focusing & Auto-Framing:** Memindahkan pusat orbit kamera tepat ke titik tengah (*centroid*) dari bounding box prim target (`set_camera_pivot_to_object`).
-* **Stepped Zoom Controls:** Kendali zoom terukur melalui rasio perkalian (`camera_zoom_in`, `camera_zoom_out`).
+#### Technical Specifications:
+* **Tumble Cursor Lockdown:** Disables `tumbleAtCursor` in Omniverse preferences to prevent unexpected camera jumps during viewport navigation.
+* **Standard ViewCube Presets:**
+  * `"iso"`: CAD standard isometric perspective (azimuth 45°, elevation 35.264°).
+  * `"top"`, `"bottom"`, `"front"`, `"back"`, `"left"`, `"right"`.
+* **Cinematic Smooth Glide:** Transitions between poses using quintic smootherstep interpolation (`6t^5 - 15t^4 + 10t^3`), eliminating velocity jolts.
+* **Centroid Auto-Framing:** Moves orbit pivots to the exact bounding-box centroid of any target prim (`set_camera_pivot_to_object`).
+* **Stepped Zoom:** Proportional scaling factors (`camera_zoom_in`, `camera_zoom_out`).
 
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-# Berpindah ke sudut isometrik dengan glide sinematik selama 1.2 detik:
+# Glide smoothly to isometric angle over 1.2 seconds:
 self.set_camera_view(stage, "iso", distance=1200.0, duration=1.2)
 
-# Fokus ke objek tertentu dengan auto-framing dan transisi halus:
-self.set_camera_pivot_to_object(stage, "/World/Room/Rack_01", distance=500.0)
+# Focus camera pivot to object:
+self.set_camera_pivot_to_object(stage, "/World/Equipment/Rack_01", distance=500.0)
 
-# Pindah instan tanpa interpolasi (cut langsung):
+# Instant cut (no interpolation):
 self.set_camera_view(stage, "top", smooth=False)
 
-# Zoom in bertahap:
+# Stepped zoom:
 self.camera_zoom_in(stage, factor=0.8)
 ```
 
 ---
 
 ### 2.6 Selection Helper Engine (`SelectionHelper`)
-Mengatur sinkronisasi seleksi interaktif antara viewport Kit dengan level handler.
+Maintains synchronization between Omniverse viewport interactions and application code.
 
-#### Spesifikasi Teknis:
-* Terkoneksi langsung ke event stream seleksi `omni.usd.get_context().get_selection()`.
-* Memicu pemanggilan callback `on_selection_changed(stage, prim_path)` pada level handler yang aktif saat pengguna mengklik objek di viewport.
-* Mendukung seleksi dan pembatalan seleksi programmatik.
+#### Technical Specifications:
+* Subscribes to the USD selection event stream (`omni.usd.get_context().get_selection()`).
+* Invokes `on_selection_changed(stage, prim_path)` on the active level handler whenever an object is clicked.
+* Supports programmatic selection and deselection.
 
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-# Ambil prim yang sedang aktif diseleksi:
-selected = self.get_selected_prim()
+# Query active selection:
+selected_prim = self.get_selected_prim()
 
-# Set seleksi secara kode:
-self.set_selection("/World/Room/Chiller_01")
+# Set selection programmatically:
+self.set_selection("/World/Equipment/Rack_01")
 
-# Bersihkan seleksi:
+# Deselect:
 self.clear_selection()
 ```
 
 ---
 
 ### 2.7 Metadata and Material Introspection Engine (`get_prim_metadata`)
-Fasilitas ekstraksi metadata prim, bound material, bounding box dimensi, dan atribut custom USD ke dalam format serialisasi JSON murni.
+Extracts prim metadata, bound materials, bounding dimensions, and custom attributes into standard Python dictionaries and serialized JSON.
 
-#### Spesifikasi Teknis:
-* **Recursive Material Search:** Jika prim induk tidak memiliki material langsung, mesin secara otomatis menelusuri *descendant prims* untuk menemukan `UsdShade.Material` yang terpasang pada submesh.
-* **JSON-Safe Serializer:** Mengonversi tipe data OpenUSD internal (`GfVec3f`, `SdfPath`, `VtArray`, `TfToken`) menjadi tipe standar Python (`list`, `float`, `int`, `str`).
-
-#### Contoh Pemanggilan Python:
+#### Python Usage:
 ```python
-metadata = self.get_prim_metadata(stage, "/World/Room/Chiller_01")
+metadata = self.get_prim_metadata(stage, "/World/Equipment/Pump")
 # Output:
 # {
-#     "name": "Chiller_01",
-#     "path": "/World/Room/Chiller_01",
+#     "name": "Pump",
+#     "path": "/World/Equipment/Pump",
 #     "type": "Xform",
 #     "material": {
-#         "material_name": "M_ChillerSteel",
-#         "material_path": "/World/Looks/M_ChillerSteel",
+#         "material_name": "M_MetalSteel",
+#         "material_path": "/World/Looks/M_MetalSteel",
 #         "binding_level": "direct (assigned to this prim)"
 #     },
 #     "bounds": {
-#         "min": [-50.0, -25.0, 0.0],
-#         "max": [50.0, 25.0, 120.0],
-#         "dimensions": [100.0, 50.0, 120.0]
-#     },
-#     "attributes": { ... }
+#         "min": [-25.0, -25.0, 0.0],
+#         "max": [25.0, 25.0, 60.0],
+#         "dimensions": [50.0, 50.0, 60.0]
+#     }
 # }
 ```
 
 ---
 
-## 3. Implementasi Level Handler (`BaseLevelHandler`)
+## 3. Bundled Example Maps (`example_map`)
 
-Berikut adalah template implementasi production-ready untuk level ruangan (`level_02_room.py`):
+The repository includes a ready-to-use map directory at `cadit-omniverse-helper/example_map/` to facilitate immediate testing of multi-level transitions:
+
+* `main_map.usd`: Primary overview scene utilized by Level 1 (`level_01_default`).
+* `level_02_map.usd`: Detailed asset scene utilized by Level 2 (`level_02`).
+
+When `LevelManager` initiates a transition (`navigate_to("level_02")`), it resolves relative map paths automatically, compares the current stage URL against the target, and asynchronously opens the new USD stage without requiring hardcoded absolute paths.
+
+---
+
+## 4. Production Level Handler Implementation (`BaseLevelHandler`)
+
+Below is the clean production implementation pattern used by both `level_01_default.py` and `level_02.py`:
 
 ```python
 from typing import Dict, Any, Optional
@@ -374,97 +376,71 @@ from ..core.base_level import BaseLevelHandler
 from ..core.context import NavigationContext
 
 
-class Level02RoomHandler(BaseLevelHandler):
-    level_id = "level_02_room"
-    display_name = "Room Overview"
-    root_prim_path = "/World/Room"
+class Level01DefaultHandler(BaseLevelHandler):
+    level_id = "level_01_default"
+    display_name = "Level 1 (Default Overview)"
 
-    # 1. Proyeksi koordinat 2D untuk Dashboard:
+    # USD Stage Map URL (relative to project root or absolute file path):
+    map_url = "cadit-omniverse-helper/example_map/main_map.usd"
+    root_prim_path = "/World"
+
+    # 2D Screen Projection Tracking for Web Dashboard:
     tracked_objects = {
-        "rack_01": "/World/Room/Rack_01",
-        "chiller_01": "/World/Room/Chiller_01"
+        "root_overview": "/World"
     }
 
-    # 2. Konfigurasi Zoom saat klik objek:
+    # Click-to-Zoom Configuration:
     zoom_on_click = True
-    click_zoom_distance = 600.0
+    click_zoom_distance = None
 
     def __init__(self, manager):
         super().__init__(manager)
-        self.room_temperature = 22.5
-        self.hvac_status = "nominal"
+        self.selected_item = None
 
     def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
-        print(f"[{self.level_id}] Memasuki level dari: {context.previous_level}")
+        print(f"[{self.level_id}] Activated. Map: {self.map_url}")
 
-        # Atur kamera awal ke pandangan Isometrik:
-        self.set_camera_view(stage, "iso", distance=1200.0)
+        # Set initial camera view to isometric:
+        self.set_camera_view(stage, "iso", distance=1000.0, smooth=True)
 
-        # Registrasi cutaway dinding ruangan:
-        self.register_cutaway_walls({
-            "wall_north": {"path": "/World/Room/Wall_North", "normal": (0, 1, 0)},
-            "wall_south": {"path": "/World/Room/Wall_South", "normal": (0, -1, 0)}
-        })
+        # Show built-in in-viewport level switcher overlay:
+        self.show_level_navigator()
 
     def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
-        print(f"[{self.level_id}] Meninggalkan level menuju: {next_level_id}")
+        print(f"[{self.level_id}] Exiting to {next_level_id}")
 
-        # Wajib: Pulihkan seluruh status visual agar stage master tetap murni
+        # Restore modified states:
         self.restore_all_visibility(stage)
         self.restore_all_colors(stage)
         self.reset_camera_pivot(stage)
 
         return {
-            "last_temperature": self.room_temperature,
-            "hvac_status": self.hvac_status
+            "from_level": self.level_id,
+            "last_selection": self.selected_item
         }
 
     def on_update(self, stage: Usd.Stage, dt: float) -> None:
-        # Update dynamic cutaway setiap frame:
-        self.update_perspective_cutaway(stage, center=(0.0, 0.0, 0.0), dot_threshold=0.15)
+        pass
 
     def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
-        # Jalankan perilaku pivot dan auto-zoom bawaan:
+        self.selected_item = prim_path
         super().on_selection_changed(stage, prim_path)
 
-        if prim_path:
-            print(f"[{self.level_id}] Prim dipilih: {prim_path}")
-
-    # --- Telemetry Integration Hooks ---
     def get_telemetry_payload(self) -> Dict[str, Any]:
-        """Menyediakan data telemetri level ruangan ke Web Dashboard."""
         return {
-            "room_temperature": self.room_temperature,
-            "hvac_status": self.hvac_status,
-            "active_alarms": 0
+            "status": "online",
+            "active_prim": self.selected_item or self.root_prim_path
         }
 
     def on_telemetry_received(self, data: Dict[str, Any]) -> None:
-        """Menangani data / instruksi yang dikirim oleh Web Dashboard."""
-        print(f"[{self.level_id}] Menerima telemetri masuk:", data)
-
-        # 1. Update nilai variabel lokal
-        if "target_temperature" in data:
-            self.room_temperature = float(data["target_temperature"])
-
-        # 2. Respon visual di 3D berdasarkan alert
-        rack_status = data.get("rack_01_status")
-        stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
-
-        if stage and rack_status:
-            if rack_status == "warning":
-                self.set_color(stage, "/World/Room/Rack_01", "#FFB300")
-            elif rack_status == "critical":
-                self.set_color(stage, "/World/Room/Rack_01", "#FF2200")
-            elif rack_status == "normal":
-                self.color_helper.restore_color(stage, "/World/Room/Rack_01")
+        print(f"[{self.level_id}] Telemetry received:", data)
 ```
 
 ---
 
-## 4. Panduan Integrasi Frontend Web (Client-Side)
+## 5. Web Frontend Integration Guide
 
-Berikut adalah contoh hook integrasi React / TypeScript untuk berkomunikasi dengan Omniverse:
+A React / TypeScript hook implementation connecting to the `TelemetryHelper` daemon:
 
 ```typescript
 import { useState, useEffect } from "react";
@@ -475,7 +451,7 @@ interface TelemetryResponse {
     selected_prim: string | null;
     registered_levels: Record<string, string>;
   };
-  projections: Record<string, { x: number; y: number; visible: boolean }>;
+  projections: Record<string, { x: number; y: number; width?: number; visible: boolean }>;
   level_telemetry: {
     level_id: string;
     data: Record<string, any>;
@@ -504,7 +480,6 @@ export function useOmniverseBridge(baseUrl: string = "http://localhost:8089", in
     return () => clearInterval(timer);
   }, [baseUrl, intervalMs]);
 
-  // Fungsi pengiriman telemetri / alert ke Omniverse:
   const sendTelemetry = async (levelId: string, data: Record<string, any>) => {
     await fetch(`${baseUrl}/api/telemetry`, {
       method: "POST",
@@ -513,8 +488,7 @@ export function useOmniverseBridge(baseUrl: string = "http://localhost:8089", in
     });
   };
 
-  // Fungsi navigasi level:
-  const navigateToLevel = async (levelId: string) => {
+  const navigateTo = async (levelId: string) => {
     await fetch(`${baseUrl}/api/navigate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -522,38 +496,43 @@ export function useOmniverseBridge(baseUrl: string = "http://localhost:8089", in
     });
   };
 
-  return { telemetry, connected, sendTelemetry, navigateToLevel };
+  return { telemetry, connected, sendTelemetry, navigateTo };
 }
 ```
 
 ---
 
-## 5. Alur Kerja CLI dan Otomasi Proyek
+## 6. Developer CLI Automation Workflow
 
-Helper dilengkapi dengan script CLI `dev_tools.py` yang dapat dijalankan secara instan melalui batch script di root proyek.
+The toolkit includes the `dev_tools.py` automation suite, accessible through root batch scripts:
 
-### Inisialisasi Proyek Baru
+### Initializing the Framework
+Scaffolds core engines, helpers, and automatically generates two starter levels (`level_01_default.py` and `level_02.py`):
 ```bash
-# Inisialisasi arsitektur core dan level default ke ekstensi target:
 .\cadit-omniverse-helper\init_framework.bat company.my_extension
 ```
 
-### Menambah Level Baru
+### Adding a New Level
+Generates a new level handler pre-populated with clean helper examples:
 ```bash
-# Menambah level baru secara mandiri:
-.\add.bat level_02_room
 .\add.bat level_03_chiller
 ```
 
-### Memeriksa Daftar Level
+### Listing Registered Levels
+Scans the extension and displays all registered handlers:
 ```bash
-# Menampilkan seluruh level yang terdaftar beserta nama kelasnya:
 .\list_levels.bat
+```
+
+### Launching Dedicated WebRTC Streaming App
+Launches Omniverse Kit using the dedicated Web View streaming profile (`cadit.web_view_only.kit`):
+```bash
+.\launch_web_view.bat
 ```
 
 ---
 
-## 6. Lisensi dan Distribusi
+## 7. License and Copyright
 
 Copyright (c) 2026 CADIT. All rights reserved.
-Dokumen ini disusun sebagai panduan arsitektur teknis resmi untuk pengembangan sistem NVIDIA Omniverse Kit SDK berbasis multi-level modular framework.
+Developed for enterprise digital twin applications powered by the NVIDIA Omniverse Kit SDK.
