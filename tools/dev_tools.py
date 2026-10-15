@@ -511,9 +511,21 @@ def cmd_init(args):
     if not starter_path.exists() or args.force:
         starter_code = read_template("level_starter_template.py.txt")
         starter_path.write_text(starter_code, encoding="utf-8")
-        print("  [+] Created levels/level_01_default.py (Auto Starter Demo)")
+        print("  [+] Created levels/level_01_default.py (Starter Level 1)")
 
-    # 13. Update extension.py
+    # 13. Write levels/level_02.py (Starter Level 2)
+    lvl2_path = levels_dir / "level_02.py"
+    if not lvl2_path.exists() or args.force:
+        template = read_template("level_template.py.txt")
+        lvl2_code = template.replace("{class_name}", "Level02Handler")
+        lvl2_code = lvl2_code.replace("{level_id}", "level_02")
+        lvl2_code = lvl2_code.replace("{display_name}", "Level 2")
+        lvl2_code = lvl2_code.replace("{root_prim_path}", "/World")
+        lvl2_code = lvl2_code.replace("{map_url}", '"cadit-omniverse-helper/example_map/level_02_map.usd"')
+        lvl2_path.write_text(lvl2_code, encoding="utf-8")
+        print("  [+] Created levels/level_02.py (Starter Level 2)")
+
+    # 14. Update extension.py
     ext_py_path = pkg_dir / "extension.py"
     ext_code = read_template("extension_template.py.txt")
     ext_class_name = to_pascal_case(ext_name) + "Extension"
@@ -522,7 +534,7 @@ def cmd_init(args):
     ext_py_path.write_text(ext_code, encoding="utf-8")
     print(f"  [+] Updated extension.py with class '{ext_class_name}'")
 
-    # 14. Ensure dedicated Web View streaming app (cadit.web_view_only.kit)
+    # 15. Ensure dedicated Web View streaming app (cadit.web_view_only.kit)
     ensure_web_view_app(ws, ext_name, force=args.force)
 
     print()
@@ -532,7 +544,7 @@ def cmd_init(args):
     print("  1. Validasi build proyek:      .\\repo.bat build")
     print("  2. Buka Omniverse Editor:      .\\repo.bat launch")
     print("  3. Stream ke Web Dashboard:    .\\launch_web_view.bat")
-    print("  4. Tambah level baru:          .\\add.bat level_02_detail")
+    print("  4. Tambah level baru:          .\\add.bat level_03_detail")
     print("  5. Cek seluruh level:          .\\list_levels.bat")
     print("=" * 70)
     return 0
@@ -568,6 +580,7 @@ def cmd_add(args):
     content = content.replace("{level_id}", clean_id)
     content = content.replace("{display_name}", display_name)
     content = content.replace("{root_prim_path}", f"/World/{clean_id}")
+    content = content.replace("{map_url}", "None")
 
     target_file.write_text(content, encoding="utf-8")
 

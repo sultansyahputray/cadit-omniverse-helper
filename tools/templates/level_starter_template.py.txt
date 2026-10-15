@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
-# Auto-generated Starter Level by init_framework.bat
+# Auto-generated Starter Level Handler: Level01DefaultHandler
 
 from typing import Dict, Any, Optional
 from pxr import Usd, UsdGeom
@@ -9,22 +9,33 @@ from ..core.context import NavigationContext
 
 
 class Level01DefaultHandler(BaseLevelHandler):
+    """
+    Starter Level 1 Handler.
+    Demonstrates default scene loading, camera initialization, and helper usage examples.
+    """
+
     level_id = "level_01_default"
     display_name = "Level 1 (Default Overview)"
+
+    # USD Stage Map URL (relative to project root or absolute file path):
+    map_url = "cadit-omniverse-helper/example_map/main_map.usd"
+
+    # Root prim path for this level:
     root_prim_path = "/World"
 
-    # 🎯 1. Objek yang dilacak koordinat layarnya untuk Web Dashboard:
+    # 1. Screen Projection Tracking (Frustum math for 2D Web Dashboard overlays):
+    # Maps unique keys to USD prim paths to track their screen percentage coordinates (x%, y%).
     tracked_objects = {
         "root_overview": "/World"
     }
 
-    # 🎯 2. Variabel warna lokal level:
+    # 2. Local Level Configuration:
     accent_color = "#00FFCC"
 
-    # 🎯 3. Konfigurasi Zoom saat klik objek:
-    # - zoom_on_click = True  -> Auto-fit bounding box objek
-    # - zoom_on_click = False -> Tanpa zoom sama sekali (hanya lock pivot kamera ke objek)
-    # - click_zoom_distance = 500.0 -> Zoom ke jarak tepat 500 unit (jika diisi angka)
+    # 3. Object Selection and Click Zoom Configuration:
+    # - zoom_on_click = True  : Automatically fits the camera to the clicked object's bounding box.
+    # - zoom_on_click = False : Keeps current camera distance, only locking the orbit pivot to the object.
+    # - click_zoom_distance = 500.0 : Zooms to an exact fixed distance (in scene units) when set to a number.
     zoom_on_click = True
     click_zoom_distance = None
 
@@ -33,61 +44,155 @@ class Level01DefaultHandler(BaseLevelHandler):
         self.selected_item = None
 
     def on_enter(self, stage: Usd.Stage, context: NavigationContext) -> None:
-        print(f"[{self.level_id}] Activated! Stage ready.")
+        """
+        Called when this level becomes active.
+        Initialize camera poses, default colors, visibility states, and UI navigators here.
+        """
+        print(f"[{self.level_id}] Activated. Map: {self.map_url}")
 
-        # 🎯 Setup kamera awal: Default view 'iso' (Isometric) menghadap (0, 0, 0) pada jarak 1000
-        self.set_camera_view(stage, "iso", distance=1000.0)
+        # =========================================================================
+        # HELPER 1: CAMERA HELPER EXAMPLES
+        # =========================================================================
+        # Preset views: 'iso' (Isometric), 'front', 'back', 'left', 'right', 'top', 'bottom'
+        self.set_camera_view(stage, "iso", distance=1000.0, smooth=True)
 
-        # 🎯 Tampilkan Level Navigator popup (mendeteksi semua level yang terdaftar otomatis):
+        # Custom camera pivot target and distance:
+        # self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=1200.0, smooth=True)
+
+        # Focus / frame a specific USD prim:
+        # self.set_camera_pivot_to_object(stage, "/World/TargetPrim", distance=500.0, zoom=True)
+
+        # Smooth camera zoom in / out:
+        # self.camera_zoom_in(stage, factor=0.8, smooth=True)
+        # self.camera_zoom_out(stage, factor=1.25, smooth=True)
+
+        # =========================================================================
+        # HELPER 2: LEVEL NAVIGATOR GUI
+        # =========================================================================
+        # Displays the built-in Omniverse in-viewport level navigation overlay:
         self.show_level_navigator()
 
+        # =========================================================================
+        # HELPER 3: VISIBILITY HELPER EXAMPLES
+        # =========================================================================
         if stage:
             prim = stage.GetPrimAtPath(self.root_prim_path)
             if prim.IsValid() and prim.IsA(UsdGeom.Imageable):
                 UsdGeom.Imageable(prim).MakeVisible()
 
-            # Contoh langsung inject warna variabel:
-            # self.set_color(stage, self.root_prim_path, self.accent_color)
-            # Contoh glow berpendar atau pulsasi:
-            # self.set_glow(stage, self.root_prim_path, "#00E5FF", intensity=4000.0, pulse=True)
+        # Hide specific prims (e.g. roof, ceiling, scaffolding):
+        # self.hide_objects(stage, ["/World/Roof", "/World/Ceiling"])
+
+        # Show previously hidden prims:
+        # self.show_objects(stage, ["/World/InteriorAssets"])
+
+        # Register cutaway walls for dynamic camera angle occlusions:
+        # self.register_cutaway_walls({
+        #     "north": "/World/Walls/North",
+        #     "south": "/World/Walls/South",
+        #     "east":  "/World/Walls/East",
+        #     "west":  "/World/Walls/West"
+        # })
+
+        # =========================================================================
+        # HELPER 4: COLOR & GLOW INJECTION HELPER EXAMPLES
+        # =========================================================================
+        # Inject solid color (Hex, RGB tuple, or RGBA tuple):
+        # self.set_color(stage, self.root_prim_path, self.accent_color)
+
+        # Inject glowing emissive material:
+        # self.set_glow(stage, self.root_prim_path, "#00E5FF", intensity=3000.0)
+
+        # Inject pulsing / breathing animated glow (ideal for alarms or status alerts):
+        # self.set_glow(stage, self.root_prim_path, "#FF3366", intensity=5000.0, pulse=True, pulse_speed=1.5)
+
+        # Batch color multiple prims in a single call:
+        # self.set_colors(stage, {
+        #     "/World/Machine_01": "#00FF00",
+        #     "/World/Machine_02": "#FF9900"
+        # }, glow=True, glow_intensity=2000.0)
+
+        # =========================================================================
+        # HELPER 5: PROJECTION HELPER EXAMPLES
+        # =========================================================================
+        # Dynamically register additional prims to track 2D screen positions for Web UI:
+        # self.track_object("pump_sensor", "/World/Pump", compute_bounds=True, anchor_point="top_center")
 
     def on_exit(self, stage: Usd.Stage, next_level_id: str) -> Dict[str, Any]:
+        """
+        Called when transitioning away from this level.
+        Clean up transient states and restore original USD attributes.
+        """
         print(f"[{self.level_id}] Exiting to {next_level_id}")
-        # Kembalikan semua visibilitas, warna, dan pivot kamera ke kondisi awal:
+
+        # Restore all modified USD prim attributes back to their original states:
         self.restore_all_visibility(stage)
         self.restore_all_colors(stage)
         self.reset_camera_pivot(stage)
+
         return {
             "from_level": self.level_id,
             "last_selection": self.selected_item
         }
 
     def on_update(self, stage: Usd.Stage, dt: float) -> None:
+        """
+        Per-frame update loop (runs on Omniverse main thread).
+        Use this for continuous updates like dynamic perspective cutaways.
+        """
+        # Example: Update wall transparency based on current camera orientation
+        # self.update_perspective_cutaway(stage)
         pass
 
     def on_selection_changed(self, stage: Usd.Stage, prim_path: Optional[str]) -> None:
+        """
+        Called when a user selects or deselects an object in the Omniverse viewport.
+        """
         self.selected_item = prim_path
-        # Pilihan konfigurasi zoom saat klik:
-        # 1. Mengikuti class property (default):
+
+        # Option A: Delegate to default selection behavior (honors zoom_on_click and click_zoom_distance):
         super().on_selection_changed(stage, prim_path)
-        # 2. Tanpa zoom sama sekali (hanya lock pivot):
+
+        # Option B: Lock camera pivot without zooming:
         # super().on_selection_changed(stage, prim_path, zoom=False)
-        # 3. Zoom ke jarak tertentu (misal 500 unit):
+
+        # Option C: Zoom to an exact custom distance (e.g. 500 units):
         # super().on_selection_changed(stage, prim_path, distance=500.0)
 
-    # 4. Telemetry & Web Dashboard Bridge Hooks:
+        # =========================================================================
+        # HELPER 6: SELECTION HELPER EXAMPLES
+        # =========================================================================
+        # Read the current selection path:
+        # active_prim = self.get_selected_prim()
+
+        # Programmatically set or clear viewport selection:
+        # self.set_selection("/World/SpecificObject")
+        # self.clear_selection()
+
+    # =========================================================================
+    # HELPER 7: TELEMETRY & WEB DASHBOARD BRIDGE HOOKS
+    # =========================================================================
     def get_telemetry_payload(self) -> Dict[str, Any]:
-        """Kirim custom metrics level ini ke Web Dashboard (GET /api/telemetry)."""
+        """
+        Returns custom metrics from this level to the Web Dashboard (GET /api/telemetry).
+        """
         return {
             "status": "online",
             "active_prim": self.selected_item or self.root_prim_path
         }
 
     def on_telemetry_received(self, data: Dict[str, Any]) -> None:
-        """Terima event / data dari Web Dashboard (POST /api/telemetry)."""
-        print(f"[{self.level_id}] Received telemetry from dashboard:", data)
-        # Contoh reaksi terhadap data alert:
-        # if data.get("alert") == "critical":
-        #     stage = omni.usd.get_context().get_stage()
-        #     self.set_color(stage, self.root_prim_path, "#FF0000")
+        """
+        Handles incoming events or commands sent from the Web Dashboard (POST /api/telemetry).
+        """
+        print(f"[{self.level_id}] Received telemetry from dashboard: {data}")
 
+        # Example: React to command sent from the web frontend
+        # command = data.get("command")
+        # if command == "focus_target":
+        #     target_path = data.get("target_path", self.root_prim_path)
+        #     stage = omni.usd.get_context().get_stage()
+        #     self.set_camera_pivot_to_object(stage, target_path, zoom=True)
+        # elif command == "highlight_alert":
+        #     stage = omni.usd.get_context().get_stage()
+        #     self.set_glow(stage, self.root_prim_path, "#FF0000", intensity=5000.0, pulse=True)

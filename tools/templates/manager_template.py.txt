@@ -131,12 +131,24 @@ class LevelManager:
 
             # 2. Check Dynamic Map Switcher
             if next_handler.map_url:
+                target_url = next_handler.map_url
+                if not (target_url.startswith("omniverse://") or target_url.startswith("http://") or target_url.startswith("https://")):
+                    if not os.path.isabs(target_url):
+                        abs_candidate = os.path.abspath(target_url).replace("\\", "/")
+                        if os.path.exists(abs_candidate):
+                            target_url = abs_candidate
+                        else:
+                            core_dir = os.path.dirname(os.path.abspath(__file__))
+                            ws_candidate = os.path.abspath(os.path.join(core_dir, "..", "..", "..", "..", "..", target_url)).replace("\\", "/")
+                            if os.path.exists(ws_candidate):
+                                target_url = ws_candidate
+
                 current_url = usd_context.get_stage_url() if usd_context else ""
                 norm_curr = os.path.normpath(current_url or "").replace("\\", "/").lower()
-                norm_target = os.path.normpath(next_handler.map_url).replace("\\", "/").lower()
+                norm_target = os.path.normpath(target_url).replace("\\", "/").lower()
                 if norm_curr != norm_target:
-                    print(f"[LevelManager] Loading stage for '{target_level_id}': {next_handler.map_url}")
-                    await usd_context.open_stage_async(next_handler.map_url)
+                    print(f"[LevelManager] Loading stage for '{target_level_id}': {target_url}")
+                    await usd_context.open_stage_async(target_url)
                     for _ in range(5):
                         await omni.kit.app.get_app().next_update_async()
                     stage = usd_context.get_stage()
