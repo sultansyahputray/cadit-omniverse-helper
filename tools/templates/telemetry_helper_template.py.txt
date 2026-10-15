@@ -1,22 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
 """
 Telemetry & Web Bridge Helper Engine:
-Provides an embedded, thread-safe HTTP/REST server for bidirectional communication
+Provides an embedded, thread-safe, multi-threaded HTTP/REST server for bidirectional communication
 between NVIDIA Omniverse Kit SDK and external Web Dashboards / IoT Gateways.
 
 Features:
-1. Thread-safe command queuing from background HTTP threads into Omniverse Kit's main update stream.
-2. Namespaced per-level telemetry ingestion and dispatch (level_id scoping).
-3. Automated aggregation of 3D-to-2D screen projections, active level metadata, and USD selection state.
-4. Automatic port detection and fallback binding (8089 -> 8088 -> 8090 -> 8091 ...).
-5. CORS support for seamless browser integration.
-6. Multi-level telemetry state caching across level transitions.
+1. Multi-threaded request execution (ThreadingMixIn) preventing blocking during heavy viewport rendering.
+2. Silent socket abortion handling (graceful suppression of [WinError 10053] on client disconnect/refresh).
+3. Thread-safe command queuing from background HTTP threads into Omniverse Kit's main update stream.
+4. Namespaced per-level telemetry ingestion and dispatch (level_id scoping).
+5. Automated aggregation of 3D-to-2D screen projections, active level metadata, and USD selection state.
+6. Automatic port detection and fallback binding (8089 -> 8088 -> 8090 -> 8091 ...).
+7. Full CORS support and connection lifecycle headers for modern browsers.
 """
 
 import http.server
+import socketserver
 import json
 import threading
 import queue
+import sys
 from typing import Dict, Any, Optional, List
 from urllib.parse import parse_qs, urlparse
 
@@ -24,10 +27,36 @@ import omni.usd
 import omni.kit.app
 
 
+class ThreadingTelemetryServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """Multi-threaded HTTP Server for Telemetry with silent connection-abort handling."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """Silently ignores connection reset/aborted errors from normal browser polling and reloads."""
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            return
+        super().handle_error(request, client_address)
+
+
 class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Internal HTTP Handler for Telemetry REST API."""
 
     helper_ref = None
+
+    def handle(self) -> None:
+        """Handle request with graceful socket abortion suppression."""
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
+
+    def finish(self) -> None:
+        """Finish request with graceful socket abortion suppression."""
+        try:
+            super().finish()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
 
     def _set_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -37,6 +66,7 @@ class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self.send_response(200)
+        self.send_header("Connection", "close")
         self._set_cors_headers()
         self.end_headers()
 
@@ -58,15 +88,23 @@ class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
             payload = helper.build_telemetry_payload(client_aspect=client_aspect) if helper else {"status": "uninitialized"}
             body = json.dumps(payload).encode("utf-8")
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self._set_cors_headers()
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                pass
         else:
-            self.send_response(404)
-            self.end_headers()
+            try:
+                self.send_response(404)
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                pass
 
     def do_POST(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -95,7 +133,7 @@ class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
             res = helper.enqueue_telemetry_ingest(target_level, data)
             self._send_json_response(200, res)
 
-        elif path == "/api/navigate":
+        elif path in ["/api/navigate", "/api/level"]:
             target_level = body.get("level") or body.get("level_id")
             item_id = body.get("item_id") or body.get("target")
             extra = {k: v for k, v in body.items() if k not in ["level", "level_id", "item_id", "target"]}
@@ -107,7 +145,8 @@ class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
             action = body.get("action")
             pivot_to = body.get("pivot_to")
             distance = body.get("distance")
-            res = helper.enqueue_camera_command(view=view, action=action, pivot_to=pivot_to, distance=distance)
+            smooth = body.get("smooth", True)
+            res = helper.enqueue_camera_command(view=view, action=action, pivot_to=pivot_to, distance=distance, smooth=smooth)
             self._send_json_response(200, res)
 
         elif path == "/api/select":
@@ -116,18 +155,41 @@ class TelemetryHTTPHandler(http.server.BaseHTTPRequestHandler):
             res = helper.enqueue_selection_command(prim_path=prim_path, clear=clear)
             self._send_json_response(200, res)
 
+        elif path == "/api/color":
+            prim_path = body.get("prim_path")
+            color = body.get("color", [1.0, 1.0, 1.0])
+            glow = body.get("glow", False)
+            glow_intensity = body.get("glow_intensity", 3000.0)
+            pulse = body.get("pulse", False)
+            pulse_speed = body.get("pulse_speed", 1.0)
+            res = helper.enqueue_color_command(prim_path, color, glow, glow_intensity, pulse, pulse_speed)
+            self._send_json_response(200, res)
+
+        elif path == "/api/color/restore":
+            prim_path = body.get("prim_path")
+            res = helper.enqueue_color_restore(prim_path)
+            self._send_json_response(200, res)
+
         else:
-            self.send_response(404)
-            self.end_headers()
+            try:
+                self.send_response(404)
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                pass
 
     def _send_json_response(self, code: int, data: dict) -> None:
-        resp_bytes = json.dumps(data).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(resp_bytes)))
-        self._set_cors_headers()
-        self.end_headers()
-        self.wfile.write(resp_bytes)
+        try:
+            resp_bytes = json.dumps(data).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Connection", "close")
+            self._set_cors_headers()
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
 
     def log_message(self, format, *args) -> None:
         """Suppress standard HTTP request logging to console."""
@@ -146,7 +208,7 @@ class TelemetryHelper:
         self.active_port: Optional[int] = None
         self.client_aspect: Optional[float] = None
 
-        self._httpd: Optional[http.server.HTTPServer] = None
+        self._httpd: Optional[ThreadingTelemetryServer] = None
         self._server_thread: Optional[threading.Thread] = None
         self._command_queue: queue.Queue = queue.Queue()
         self._level_cache: Dict[str, dict] = {}
@@ -156,7 +218,7 @@ class TelemetryHelper:
             self.start_server(self.preferred_port)
 
     def start_server(self, port: int = 8089) -> bool:
-        """Starts embedded HTTP server on preferred port or fallbacks."""
+        """Starts embedded multi-threaded HTTP server on preferred port or fallbacks."""
         if self._is_running:
             return True
 
@@ -164,12 +226,12 @@ class TelemetryHelper:
         candidate_ports = [port, 8088, 8090, 8091, 8092, 8093]
         for p in candidate_ports:
             try:
-                self._httpd = http.server.HTTPServer(("0.0.0.0", p), TelemetryHTTPHandler)
+                self._httpd = ThreadingTelemetryServer(("0.0.0.0", p), TelemetryHTTPHandler)
                 self.active_port = p
                 self._server_thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
                 self._server_thread.start()
                 self._is_running = True
-                print(f"[TelemetryHelper] REST API Server listening on http://0.0.0.0:{p}")
+                print(f"[TelemetryHelper] Multi-Threaded REST API Server listening on http://0.0.0.0:{p}")
                 return True
             except OSError:
                 continue
@@ -215,15 +277,25 @@ class TelemetryHelper:
         self._command_queue.put(("navigate", target_level, item_id, extra))
         return {"status": "ok", "target_level": target_level}
 
-    def enqueue_camera_command(self, view: Optional[str] = None, action: Optional[str] = None, pivot_to: Optional[str] = None, distance: Optional[float] = None) -> dict:
+    def enqueue_camera_command(self, view: Optional[str] = None, action: Optional[str] = None, pivot_to: Optional[str] = None, distance: Optional[float] = None, smooth: bool = True) -> dict:
         """Enqueues camera viewpoint/zoom command."""
-        self._command_queue.put(("camera", view, action, pivot_to, distance))
+        self._command_queue.put(("camera", view, action, pivot_to, distance, smooth))
         return {"status": "ok"}
 
     def enqueue_selection_command(self, prim_path: Optional[str] = None, clear: bool = False) -> dict:
         """Enqueues prim selection command."""
         self._command_queue.put(("select", prim_path, clear))
         return {"status": "ok"}
+
+    def enqueue_color_command(self, prim_path: str, color: list, glow: bool, glow_intensity: float, pulse: bool, pulse_speed: float) -> dict:
+        """Enqueues prim color, glow, and flow pulse command."""
+        self._command_queue.put(("color", prim_path, color, glow, glow_intensity, pulse, pulse_speed))
+        return {"status": "ok", "prim_path": prim_path}
+
+    def enqueue_color_restore(self, prim_path: Optional[str] = None) -> dict:
+        """Enqueues color restoration command."""
+        self._command_queue.put(("color_restore", prim_path))
+        return {"status": "ok", "prim_path": prim_path or "all"}
 
     def get_cached_telemetry(self, level_id: str) -> dict:
         """Returns the latest cached telemetry data for a specified level."""
@@ -313,18 +385,18 @@ class TelemetryHelper:
                     self.manager.navigate_to(target_level, item_id, **extra)
 
                 elif cmd_type == "camera":
-                    _, view, action, pivot_to, distance = cmd
+                    _, view, action, pivot_to, distance, smooth = cmd
                     stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
                     if stage and self.manager.active_level:
                         cam = self.manager.active_level.camera_helper
                         if view:
-                            cam.set_camera_view(stage, view, distance=distance)
+                            cam.set_camera_view(stage, view, distance=distance, smooth=smooth)
                         if pivot_to:
-                            cam.set_camera_pivot_to_object(stage, pivot_to, distance=distance)
+                            cam.set_camera_pivot_to_object(stage, pivot_to, distance=distance, smooth=smooth)
                         if action == "zoom_in":
-                            cam.camera_zoom_in(stage)
+                            cam.camera_zoom_in(stage, smooth=smooth)
                         elif action == "zoom_out":
-                            cam.camera_zoom_out(stage)
+                            cam.camera_zoom_out(stage, smooth=smooth)
 
                 elif cmd_type == "select":
                     _, prim_path, clear = cmd
@@ -333,6 +405,23 @@ class TelemetryHelper:
                             self.manager.selection_helper.clear_selection()
                         elif prim_path:
                             self.manager.selection_helper.set_selection(prim_path)
+
+                elif cmd_type == "color":
+                    _, prim_path, color, glow, glow_intensity, pulse, pulse_speed = cmd
+                    stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+                    if stage and self.manager.active_level and hasattr(self.manager.active_level, "color_helper"):
+                        self.manager.active_level.color_helper.set_color(
+                            stage, prim_path, color, glow=glow, glow_intensity=glow_intensity, pulse=pulse, pulse_speed=pulse_speed
+                        )
+
+                elif cmd_type == "color_restore":
+                    _, prim_path = cmd
+                    stage = omni.usd.get_context().get_stage() if omni.usd.get_context() else None
+                    if stage and self.manager.active_level and hasattr(self.manager.active_level, "color_helper"):
+                        if prim_path:
+                            self.manager.active_level.color_helper.restore_color(stage, prim_path)
+                        else:
+                            self.manager.active_level.color_helper.restore_all_colors(stage)
 
                 processed_count += 1
             except queue.Empty:
