@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
+
+[package]
+title = "{{package_title}}"
+version = "0.1.0"
+description = "Clean viewport-only streaming application for Web Dashboard."
+keywords = ["app", "streaming", "web"]
+template_name = "kit_base_editor"
+
+
+[dependencies]
+# =========================================================================
+# 1. CORE & RUNTIME
+# =========================================================================
+"omni.kit.developer.bundle" = {}
+"omni.kit.telemetry" = {}
+"omni.rtx.settings.core" = {}
+"omni.physx.stageupdate" = {}
+"omni.uiaudio" = {}
+"omni.warp.core" = {}
+"{{extension_name}}" = {}
+
+# =========================================================================
+# 2. VIEWPORT & RENDERING (RTX Hardware Acceleration)
+# =========================================================================
+"omni.hydra.rtx" = {}
+"omni.hydra.usdrt_delegate" = {}
+"omni.kit.viewport.window" = {}
+"omni.kit.viewport.ready" = {}
+
+# =========================================================================
+# 3. VIEWPORT MANIPULATORS & SELECTION
+# =========================================================================
+"omni.kit.viewport.menubar.lighting" = {}
+"omni.kit.manipulator.camera" = {}
+"omni.kit.manipulator.selection" = {}
+"omni.kit.raycast.query" = {}
+"omni.kit.viewport.legacy_gizmos" = {}
+
+# =========================================================================
+# 4. RUNTIME GRAPH & ASSETS
+# =========================================================================
+"omni.activity.profiler" = {}
+"omni.activity.pump" = {}
+"omni.anim.curve.core" = {}
+"omni.graph.action" = {}
+"omni.graph.core" = {}
+"omni.graph.nodes" = {}
+"omni.graph.scriptnode" = {}
+"omni.graph.ui_nodes" = {}
+"omni.kit.material.library" = {}
+"omni.kit.primitive.mesh" = {}
+"omni.kit.stage_template.core" = {}
+"omni.kit.tool.asset_importer" = {}
+"omni.kit.tool.collect" = {}
+
+# =========================================================================
+# 5. WEBRTC LIVESTREAM
+# =========================================================================
+"omni.kit.livestream.app" = {}
+
+
+[settings.persistent.app]
+viewport.autoFrame.mode = "disabled"
+
+
+[settings]
+crashreporter.compressDumpFiles = true
+exts."omni.kit.material.library".ui_show_list = ["OpenPBR Base", "OpenPBR", "OmniGlass", "OmniSurface", "USD Preview Surface", "Add MDL*", "Add MaterialX*"]
+exts."omni.rtx.window.settings".window_menu = "Window"
+exts."omni.kit.viewport.menubar.lighting".defaultRigIgnorePattern = ""
+exts."omni.kit.viewport.menubar.lighting".defaultRig = ""
+exts."omni.kit.viewport.menubar.lighting".preserveActiveRig = false
+rtx.sceneDb.ambientLightIntensity = 0.0
+exts."omni.kit.viewport.window".windowMenu.entryCount = 1
+exts."omni.kit.viewport.window".windowMenu.label = ""
+renderer.gpuEnumeration.glInterop.enabled = false
+renderer.asyncInit = true
+rtx.ecoMode.enabled = true
+rtx.hydra.mdlMaterialWarmup = true
+telemetry.disableInternalSessionCheck = true
+telemetry.enableAnonymousAppName = true
+telemetry.enableAnonymousData = true
+privacy.externalBuild = true
+
+
+[settings.app]
+content.emptyStageOnStart = true
+font.file = "${fonts}/OpenSans-SemiBold.ttf"
+font.size = 16
+hangDetector.enabled = true
+hangDetector.timeout = 120
+renderer.skipWhileMinimized = false
+window.title = "{{package_title}}"
+
+[settings.exts."omni.kit.livestream.webrtc"]
+signaling_server_port = 49100
+
+[settings.app.environment]
+name = "{{package_title}}"
+
+
+[settings.app.exts]
+folders.'++' = [
+    "${app}/../exts",
+    "${app}/../extscache/"
+]
+
+
+# =========================================================================
+# KONFIGURASI JENDELA APLIKASI (HEADLESS / CLEAN VIEWPORT ONLY)
+# =========================================================================
+[settings.app.window]
+title = "{{package_title}}"
+width = 1920
+height = 1080
+hideUi = true
+drawMouse = true
+alwaysFullscreen = true
+
+
+# =========================================================================
+# KONFIGURASI DEFAULT VIEWPORT
+# =========================================================================
+[settings.app.viewport.defaults]
+fillViewport = true
+guide.grid.visible = false
+guide.axis.visible = false
+hud.visible = false
+scene.cameras.visible = false
+scene.lights.visible = false
+createDefaultLight = true
+lightingMode = "stage"
+
+
+[[test]]
+args = [
+    "--/app/file/ignoreUnsavedOnExit=true"
+]
+
+[template]
+type = "ApplicationTemplate"

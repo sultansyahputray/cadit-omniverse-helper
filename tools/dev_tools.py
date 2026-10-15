@@ -242,9 +242,30 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         "fi\n"
     )
 
+    launch_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "echo ======================================================================\r\n"
+        "echo   Launching Omniverse Web View Streaming Application...\r\n"
+        "echo   Target: cadit.web_view_only.kit ^| Signaling Port: 49100\r\n"
+        "echo ======================================================================\r\n"
+        "call .\\repo.bat launch -n cadit.web_view_only.kit %*\r\n"
+        "endlocal\r\n"
+    )
+    launch_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'echo "======================================================================"\n'
+        'echo "  Launching Omniverse Web View Streaming Application..."\n'
+        'echo "  Target: cadit.web_view_only.kit | Signaling Port: 49100"\n'
+        'echo "======================================================================"\n'
+        './repo.sh launch -n cadit.web_view_only.kit "$@"\n'
+    )
+
     root_init_sh = ws / "init_framework.sh"
     root_add_sh = ws / "add.sh"
     root_list_sh = ws / "list_levels.sh"
+    root_launch_bat = ws / "launch_web_view.bat"
+    root_launch_sh = ws / "launch_web_view.sh"
 
     created_shortcuts = []
     if not root_init_bat.exists():
@@ -256,6 +277,9 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_list_bat.exists():
         root_list_bat.write_text(list_cmd, encoding="utf-8")
         created_shortcuts.append("list_levels.bat")
+    if not root_launch_bat.exists():
+        root_launch_bat.write_text(launch_cmd, encoding="utf-8")
+        created_shortcuts.append("launch_web_view.bat")
 
     if not root_init_sh.exists():
         root_init_sh.write_text(init_sh_cmd, encoding="utf-8")
@@ -266,9 +290,118 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_list_sh.exists():
         root_list_sh.write_text(list_sh_cmd, encoding="utf-8")
         created_shortcuts.append("list_levels.sh")
+    if not root_launch_sh.exists():
+        root_launch_sh.write_text(launch_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("launch_web_view.sh")
 
     if created_shortcuts:
         print(f"  [+] Exported root shortcuts: {', '.join(created_shortcuts)} to project root")
+
+
+def ensure_web_view_app(ws: Path, ext_name: str, force: bool = False) -> None:
+    """
+    Scaffolds dedicated Web View Kit app (source/apps/cadit.web_view_only.kit),
+    registers it in premake5.lua and repo.toml, and ensures streaming bundles.
+    """
+    apps_dir = ws / "source" / "apps"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    web_view_kit = apps_dir / "cadit.web_view_only.kit"
+
+    template_file = get_templates_dir() / "web_view_app_template.kit.txt"
+    if not template_file.exists():
+        print(f"[ERROR] Template '{template_file.name}' tidak ditemukan.")
+        return
+
+    # 1. Generate cadit.web_view_only.kit if missing or forced
+    if not web_view_kit.exists() or force:
+        title = f"Web View {ext_name.split('.')[-1].replace('_', ' ').title()}"
+        content = template_file.read_text(encoding="utf-8")
+        content = content.replace("{{package_title}}", title)
+        content = content.replace("{{extension_name}}", ext_name)
+        web_view_kit.write_text(content, encoding="utf-8")
+        print(f"  [+] Created dedicated streaming app: source/apps/{web_view_kit.name}")
+    else:
+        print(f"  [INFO] Streaming app 'source/apps/{web_view_kit.name}' sudah aktif.")
+
+    # 2. Register in premake5.lua
+    premake_file = ws / "premake5.lua"
+    if premake_file.exists():
+        premake_content = premake_file.read_text(encoding="utf-8")
+        if 'define_app("cadit.web_view_only.kit")' not in premake_content:
+            premake_content = premake_content.rstrip() + '\ndefine_app("cadit.web_view_only.kit")\n'
+            premake_file.write_text(premake_content, encoding="utf-8")
+            print("  [+] Registered cadit.web_view_only.kit in premake5.lua")
+
+    # 3. Register in repo.toml under repo_precache_exts.apps
+    repo_file = ws / "repo.toml"
+    if repo_file.exists():
+        repo_content = repo_file.read_text(encoding="utf-8")
+        if "cadit.web_view_only.kit" not in repo_content:
+            def _add_app(match):
+                curr_apps = match.group(0)
+                if '"${root}/source/apps/cadit.web_view_only.kit"' not in curr_apps:
+                    closing_idx = curr_apps.rfind("]")
+                    if closing_idx != -1:
+                        prefix = curr_apps[:closing_idx].rstrip()
+                        if prefix.endswith("["):
+                            return f'{prefix}"${{root}}/source/apps/cadit.web_view_only.kit"]'
+                        else:
+                            return f'{prefix}, "${{root}}/source/apps/cadit.web_view_only.kit"]'
+                return curr_apps
+
+            repo_content = re.sub(r'apps\s*=\s*\[[^\]]*\]', _add_app, repo_content, count=1)
+            repo_file.write_text(repo_content, encoding="utf-8")
+            print("  [+] Registered cadit.web_view_only.kit in repo.toml")
+
+    # 4. Generate root launcher shortcuts
+    root_launch_bat = ws / "launch_web_view.bat"
+    root_launch_sh = ws / "launch_web_view.sh"
+
+    launch_bat_content = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "echo ======================================================================\r\n"
+        "echo   Launching Omniverse Web View Streaming Application...\r\n"
+        "echo   Target: cadit.web_view_only.kit ^| Signaling Port: 49100\r\n"
+        "echo ======================================================================\r\n"
+        "call .\\repo.bat launch -n cadit.web_view_only.kit %*\r\n"
+        "endlocal\r\n"
+    )
+    launch_sh_content = (
+        "#!/usr/bin/env bash\n"
+        'echo "======================================================================"\n'
+        'echo "  Launching Omniverse Web View Streaming Application..."\n'
+        'echo "  Target: cadit.web_view_only.kit | Signaling Port: 49100"\n'
+        'echo "======================================================================"\n'
+        './repo.sh launch -n cadit.web_view_only.kit "$@"\n'
+    )
+
+    if not root_launch_bat.exists() or force:
+        root_launch_bat.write_text(launch_bat_content, encoding="utf-8")
+        print("  [+] Created root launcher shortcut: launch_web_view.bat")
+
+    if not root_launch_sh.exists() or force:
+        root_launch_sh.write_text(launch_sh_content, encoding="utf-8")
+        print("  [+] Created root launcher shortcut: launch_web_view.sh")
+
+    # 5. Sync streaming extension bundles if available in extscache
+    dest_extscache = ws / "_build" / "windows-x86_64" / "release" / "extscache"
+    if dest_extscache.is_dir():
+        livestream_found = list(dest_extscache.glob("*omni.kit.livestream.app*"))
+        if not livestream_found and ws.parent.is_dir():
+            import shutil
+            for sibling in ["data-centre", "complete-data-centre"]:
+                src_cache = ws.parent / sibling / "_build" / "windows-x86_64" / "release" / "extscache"
+                if src_cache.is_dir():
+                    for item in src_cache.glob("*livestream*"):
+                        target_dir = dest_extscache / item.name
+                        if not target_dir.exists():
+                            try:
+                                shutil.copytree(item, target_dir)
+                                print(f"  [+] Copied cached extension: {item.name}")
+                            except Exception:
+                                pass
+                    break
 
 
 def cmd_init(args):
@@ -389,14 +522,18 @@ def cmd_init(args):
     ext_py_path.write_text(ext_code, encoding="utf-8")
     print(f"  [+] Updated extension.py with class '{ext_class_name}'")
 
+    # 14. Ensure dedicated Web View streaming app (cadit.web_view_only.kit)
+    ensure_web_view_app(ws, ext_name, force=args.force)
+
     print()
     print("[SUCCESS] Inisialisasi Framework Berhasil!")
     print("-" * 70)
     print("Langkah Selanjutnya:")
-    print("  1. Validasi build proyek:   .\\repo.bat build")
-    print("  2. Jalankan aplikasi Kit:   .\\repo.bat launch")
-    print("  3. Tambah level baru:       .\\add.bat level_02_detail")
-    print("  4. Cek seluruh level:       .\\list_levels.bat")
+    print("  1. Validasi build proyek:      .\\repo.bat build")
+    print("  2. Buka Omniverse Editor:      .\\repo.bat launch")
+    print("  3. Stream ke Web Dashboard:    .\\launch_web_view.bat")
+    print("  4. Tambah level baru:          .\\add.bat level_02_detail")
+    print("  5. Cek seluruh level:          .\\list_levels.bat")
     print("=" * 70)
     return 0
 
@@ -488,6 +625,23 @@ def cmd_list(args):
     return 0
 
 
+def cmd_webview(args):
+    """Generates or updates dedicated Web View Kit streaming app (cadit.web_view_only.kit)."""
+    ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension)
+    ws = get_workspace_root()
+    print("=" * 70)
+    print("  OMNIVERSE WEB VIEW STREAMING APP SCAFFOLDING")
+    print("=" * 70)
+    print(f"[WORKSPACE] Root: {ws}")
+    print(f"[TARGET]    Ekstensi: '{ext_name}'")
+    ensure_web_view_app(ws, ext_name, force=args.force)
+    print("-" * 70)
+    print("Selesai! Untuk menjalankan streaming:")
+    print("  .\\launch_web_view.bat")
+    print("=" * 70)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Omniverse Modular Extension Scaffolding Engine")
     subparsers = parser.add_subparsers(dest="command", help="Perintah yang tersedia")
@@ -507,6 +661,11 @@ def main():
     list_parser = subparsers.add_parser("list", help="Tampilkan daftar level yang terdaftar")
     list_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
 
+    # Command: webview
+    webview_parser = subparsers.add_parser("webview", help="Buat/perbarui aplikasi streaming cadit.web_view_only.kit")
+    webview_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
+    webview_parser.add_argument("--force", action="store_true", help="Paksa timpa file jika sudah ada")
+
     parsed = parser.parse_args()
 
     if parsed.command == "init":
@@ -515,6 +674,8 @@ def main():
         sys.exit(cmd_add(parsed))
     elif parsed.command == "list":
         sys.exit(cmd_list(parsed))
+    elif parsed.command == "webview":
+        sys.exit(cmd_webview(parsed))
     else:
         parser.print_help()
         sys.exit(1)
@@ -522,3 +683,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
