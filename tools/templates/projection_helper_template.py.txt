@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 CADIT. All rights reserved.
 """
 ProjectionHelper Engine:
-Computes 2D screen coordinates (0% to 100% viewport X/Y) for tracked 3D USD prims.
-Equipped with dirty-check caching (0% CPU when camera still) and automatic camera clipping.
+Computes 2D screen coordinates (0% to 100% viewport X/Y) and dynamic bounding width
+for tracked 3D USD prims.
+Equipped with dirty-check caching (0% CPU when camera still), stage up-axis awareness,
+and offscreen buffer tolerance for natural 3D sticker cut-off.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from pxr import Usd, UsdGeom, Gf
 
 try:
@@ -15,20 +17,29 @@ except ImportError:
 
 
 class ProjectionHelper:
-    """3D Frustum-to-2D Screen Space Projection Engine."""
+    """3D Frustum-to-2D Screen Space Projection Engine with Zoom & Bounds Support."""
 
-    def __init__(self):
+    def __init__(self, screen_margin: float = 25.0):
+        self.screen_margin = screen_margin
         self._last_cam_matrix: Optional[Gf.Matrix4d] = None
         self._last_aspect: Optional[float] = None
         self._cached_screen_positions: Dict[str, Dict[str, Any]] = {}
-        self._cached_midpoints_3d: Dict[str, Gf.Vec3d] = {}
+        self._cached_points_3d: Dict[str, Gf.Vec3d] = {}
+        self._cached_ranges_3d: Dict[str, Gf.Range3d] = {}
 
     def clear_projection_cache(self) -> None:
         """Clears all cached 3D and 2D positions."""
         self._last_cam_matrix = None
         self._last_aspect = None
         self._cached_screen_positions.clear()
-        self._cached_midpoints_3d.clear()
+        self._cached_points_3d.clear()
+        self._cached_ranges_3d.clear()
+
+    def clear_object_cache(self, key: str) -> None:
+        """Clears cached 3D data for a specific tracked object."""
+        self._cached_points_3d.pop(key, None)
+        self._cached_ranges_3d.pop(key, None)
+        self._cached_screen_positions.pop(key, None)
 
     def get_active_camera_prim(self, stage: Usd.Stage) -> Optional[Usd.Prim]:
         """Resolves the currently active viewport camera prim."""
@@ -74,18 +85,24 @@ class ProjectionHelper:
     def compute_screen_positions(
         self,
         stage: Usd.Stage,
-        tracked_prims: Dict[str, str],
+        tracked_prims: Dict[str, Union[str, Dict[str, Any]]],
         client_aspect: Optional[float] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Computes 2D screen positions for all tracked USD prims.
+        Computes 2D screen positions and optional zoom-scale width for all tracked USD prims.
+        tracked_prims accepts:
+            {"key": "/World/PrimPath"}
+            or
+            {"key": {"path": "/World/PrimPath", "bounds": True, "anchor": "top_center"}}
+
         Returns:
             {
                 "object_key": {
                     "x": 48.5,        # 0.0% to 100.0% from left
                     "y": 55.2,        # 0.0% to 100.0% from top
-                    "visible": True,  # False if behind camera or outside frustum
-                    "depth": 120.4    # Camera depth distance
+                    "visible": True,  # True if in front of camera and within screen + margin
+                    "depth": 120.4,   # Camera depth distance
+                    "width": 6.8      # Optional: Projected bounding box width in %
                 }
             }
         """
@@ -121,27 +138,63 @@ class ProjectionHelper:
             gf_cam.horizontalAperture = vert_ap * viewport_aspect
 
             frustum = gf_cam.frustum
-            view_proj = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix()
+            view_mat = frustum.ComputeViewMatrix()
+            proj_mat = frustum.ComputeProjectionMatrix()
+            view_proj = view_mat * proj_mat
 
+            is_z_up = UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
             bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
             positions: Dict[str, Dict[str, Any]] = {}
 
-            for key, prim_path in tracked_prims.items():
-                if key not in self._cached_midpoints_3d:
+            for key, config in tracked_prims.items():
+                if isinstance(config, str):
+                    prim_path = config
+                    calc_bounds = False
+                    anchor = "top_center"
+                elif isinstance(config, dict):
+                    prim_path = config.get("path", "")
+                    calc_bounds = config.get("bounds", False)
+                    anchor = config.get("anchor", "top_center")
+                else:
+                    continue
+
+                if not prim_path:
+                    continue
+
+                # Cache 3D world bounding range
+                if key not in self._cached_ranges_3d:
                     prim = stage.GetPrimAtPath(prim_path)
                     if prim and prim.IsValid():
                         bound = bbox_cache.ComputeWorldBound(prim)
                         rng = bound.ComputeAlignedRange()
                         if not rng.IsEmpty():
-                            self._cached_midpoints_3d[key] = rng.GetMidpoint()
+                            self._cached_ranges_3d[key] = rng
 
-                pt_3d = self._cached_midpoints_3d.get(key)
-                if not pt_3d:
+                rng = self._cached_ranges_3d.get(key)
+                if not rng:
                     continue
 
+                min_pt = rng.GetMin()
+                max_pt = rng.GetMax()
+
+                # Determine 3D anchor position
+                if anchor == "center":
+                    pt_3d = rng.GetMidpoint()
+                elif anchor == "bottom_center":
+                    if is_z_up:
+                        pt_3d = Gf.Vec3d((min_pt[0] + max_pt[0]) / 2.0, (min_pt[1] + max_pt[1]) / 2.0, min_pt[2])
+                    else:
+                        pt_3d = Gf.Vec3d((min_pt[0] + max_pt[0]) / 2.0, min_pt[1], (min_pt[2] + max_pt[2]) / 2.0)
+                else:  # "top_center" default
+                    if is_z_up:
+                        pt_3d = Gf.Vec3d((min_pt[0] + max_pt[0]) / 2.0, (min_pt[1] + max_pt[1]) / 2.0, max_pt[2])
+                    else:
+                        pt_3d = Gf.Vec3d((min_pt[0] + max_pt[0]) / 2.0, max_pt[1], (min_pt[2] + max_pt[2]) / 2.0)
+
+                # Project 3D anchor to clip space
                 pt_clip = Gf.Vec4d(pt_3d[0], pt_3d[1], pt_3d[2], 1.0) * view_proj
 
-                # Behind camera clipping:
+                # Check if behind camera
                 if pt_clip[3] <= 1e-4:
                     positions[key] = {
                         "x": 50.0,
@@ -156,13 +209,33 @@ class ProjectionHelper:
                 screen_x = round(((ndc_x + 1.0) / 2.0) * 100.0, 2)
                 screen_y = round(((1.0 - ndc_y) / 2.0) * 100.0, 2)
 
-                is_inside = (0.0 <= screen_x <= 100.0) and (0.0 <= screen_y <= 100.0)
-                positions[key] = {
+                # Tolerant offscreen buffer margin for natural 3D sticker clipping
+                is_inside = (
+                    (-self.screen_margin <= screen_x <= 100.0 + self.screen_margin) and
+                    (-self.screen_margin <= screen_y <= 100.0 + self.screen_margin)
+                )
+
+                item_pos: Dict[str, Any] = {
                     "x": screen_x,
                     "y": screen_y,
                     "visible": bool(is_inside),
                     "depth": round(float(pt_clip[3]), 2)
                 }
+
+                # Optional: Calculate projected bounding box width for dynamic zoom scaling
+                if calc_bounds:
+                    left_pt_4d = Gf.Vec4d(min_pt[0], pt_3d[1], pt_3d[2], 1.0) * view_proj
+                    right_pt_4d = Gf.Vec4d(max_pt[0], pt_3d[1], pt_3d[2], 1.0) * view_proj
+                    if left_pt_4d[3] > 1e-4 and right_pt_4d[3] > 1e-4:
+                        ndc_left_x = left_pt_4d[0] / left_pt_4d[3]
+                        ndc_right_x = right_pt_4d[0] / right_pt_4d[3]
+                        screen_left_x = ((ndc_left_x + 1.0) / 2.0) * 100.0
+                        screen_right_x = ((ndc_right_x + 1.0) / 2.0) * 100.0
+                        item_pos["width"] = round(abs(screen_right_x - screen_left_x), 2)
+                    else:
+                        item_pos["width"] = 5.0
+
+                positions[key] = item_pos
 
             self._cached_screen_positions = positions
             return positions

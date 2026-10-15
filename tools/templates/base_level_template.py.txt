@@ -58,6 +58,33 @@ class BaseLevelHandler(ABC):
         self.visibility_helper.restore_all_visibility(stage)
 
     # --- Delegated Projection Methods ---
+    def track_object(
+        self,
+        key: str,
+        prim_path: str,
+        compute_bounds: bool = False,
+        anchor_point: str = "top_center"
+    ) -> None:
+        """
+        Registers a USD prim to track screen coordinates (x%, y%, and optional width%).
+        Args:
+            key: Unique identifier in telemetry output (e.g. 'Rack_01', 'Chiller_A')
+            prim_path: USD stage prim path (e.g. '/World/DataCentre/Rack_01')
+            compute_bounds: If True, calculates projected bounding width for dynamic zoom scaling
+            anchor_point: 'top_center', 'center', or 'bottom_center'
+        """
+        self.tracked_objects[key] = {
+            "path": prim_path,
+            "bounds": compute_bounds,
+            "anchor": anchor_point
+        }
+
+    def untrack_object(self, key: str) -> None:
+        """Removes a USD prim from tracked objects and clears its cached projection."""
+        self.tracked_objects.pop(key, None)
+        if hasattr(self, "projection_helper"):
+            self.projection_helper.clear_object_cache(key)
+
     def get_tracked_screen_positions(self, stage: Usd.Stage, client_aspect=None) -> Dict[str, Dict[str, Any]]:
         return self.projection_helper.compute_screen_positions(stage, self.tracked_objects, client_aspect)
 
