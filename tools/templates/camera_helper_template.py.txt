@@ -7,7 +7,7 @@ gradual zoom, zoom-to-fit controls, and built-in smooth cinematic glide transiti
 """
 
 from typing import Optional, Tuple, Dict, Any, Union
-from pxr import Usd, UsdGeom, Sdf, Gf
+from pxr import Usd, UsdGeom, Sdf, Gf, Tf
 
 try:
     import carb.settings
@@ -124,7 +124,7 @@ class CameraHelper:
                         attr = p.GetAttribute(op_name)
                         if attr and attr.IsValid():
                             attr.Clear()
-                    xformable.SetXformOpOrder([Sdf.Token("xformOp:transform")])
+                    xformable.SetXformOpOrder([UsdGeom.XformOp(trans_attr)])
 
             # Configure lens attributes
             for attr_name, val_type, val in [
