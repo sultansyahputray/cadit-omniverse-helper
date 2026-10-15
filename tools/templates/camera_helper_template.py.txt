@@ -192,16 +192,10 @@ class CameraHelper:
         if vp_utils:
             try:
                 v_api = vp_utils.get_active_viewport()
-                if v_api:
+                if v_api and str(v_api.camera_path) != str(cam_path):
                     v_api.camera_path = cam_path
             except Exception:
                 pass
-
-        try:
-            import omni.kit.commands
-            omni.kit.commands.execute("SetViewportCamera", camera_path=cam_path)
-        except Exception:
-            pass
 
         self._current_distance = distance
         self._current_pivot = look_at
