@@ -85,12 +85,12 @@ privacy.externalBuild = true
 
 
 [settings.app]
-content.emptyStageOnStart = true
+content.emptyStageOnStart = false
 font.file = "${fonts}/OpenSans-SemiBold.ttf"
 font.size = 16
 hangDetector.enabled = true
 hangDetector.timeout = 120
-renderer.skipWhileMinimized = false
+renderer.skipWhileMinimized = true
 window.title = "{{package_title}}"
 
 [settings.exts."omni.kit.livestream.webrtc"]
@@ -129,7 +129,7 @@ guide.axis.visible = false
 hud.visible = false
 scene.cameras.visible = false
 scene.lights.visible = false
-createDefaultLight = true
+createDefaultLight = false
 lightingMode = "stage"
 
 
