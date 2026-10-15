@@ -318,6 +318,24 @@ def ensure_web_view_app(ws: Path, ext_name: str, force: bool = False) -> None:
         content = template_file.read_text(encoding="utf-8")
         content = content.replace("{{package_title}}", title)
         content = content.replace("{{extension_name}}", ext_name)
+
+        # Detect if project uses Pixar Hydra (omni.hydra.pxr) instead of RTX (omni.hydra.rtx)
+        uses_pxr = False
+        for kit_file in apps_dir.glob("*.kit"):
+            if kit_file.name != "cadit.web_view_only.kit":
+                kit_text = kit_file.read_text(encoding="utf-8", errors="ignore")
+                if '"omni.hydra.pxr"' in kit_text and '"omni.hydra.rtx"' not in kit_text:
+                    uses_pxr = True
+                    break
+
+        if uses_pxr:
+            content = content.replace('"omni.hydra.rtx" = {}', '"omni.hydra.pxr" = {}')
+            content = content.replace('"omni.rtx.settings.core" = {}', '#"omni.rtx.settings.core" = {}')
+            content = content.replace('exts."omni.rtx.window.settings".window_menu', '#exts."omni.rtx.window.settings".window_menu')
+            content = content.replace('rtx.sceneDb.ambientLightIntensity', '#rtx.sceneDb.ambientLightIntensity')
+            content = content.replace('rtx.ecoMode.enabled', '#rtx.ecoMode.enabled')
+            content = content.replace('rtx.hydra.mdlMaterialWarmup', '#rtx.hydra.mdlMaterialWarmup')
+
         web_view_kit.write_text(content, encoding="utf-8")
         print(f"  [+] Created dedicated streaming app: source/apps/{web_view_kit.name}")
     else:
