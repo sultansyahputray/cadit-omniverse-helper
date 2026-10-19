@@ -58,6 +58,7 @@ class LevelManager:
                 print(f"[LevelManager] Levels directory not found at: {levels_dir}")
                 return
 
+            importlib.invalidate_caches()
             # Ensure levels package is imported
             try:
                 importlib.import_module(levels_pkg_name)
@@ -67,6 +68,8 @@ class LevelManager:
             for fname in sorted(os.listdir(levels_dir)):
                 if fname.startswith("level_") and fname.endswith(".py"):
                     mod_name = fname[:-3]
+                    if mod_name in self._handlers:
+                        continue
                     full_mod_name = f"{levels_pkg_name}.{mod_name}"
                     try:
                         mod = importlib.import_module(full_mod_name)
@@ -85,9 +88,43 @@ class LevelManager:
         except Exception as e:
             print(f"[LevelManager] Level auto-discovery failed: {e}")
 
+    def sync_levels(self) -> Dict[str, str]:
+        """
+        Synchronizes memory handlers with the filesystem:
+        - Prunes deleted levels from memory (and navigates away if active).
+        - Automatically discovers and loads any newly added levels.
+        """
+        try:
+            core_dir = os.path.dirname(__file__)
+            ext_dir = os.path.dirname(core_dir)
+            levels_dir = os.path.join(ext_dir, "levels")
+            if os.path.isdir(levels_dir):
+                existing_files = {
+                    fname[:-3] for fname in os.listdir(levels_dir)
+                    if fname.startswith("level_") and fname.endswith(".py")
+                }
+                # 1. Prune deleted levels
+                to_remove = [lvl_id for lvl_id in list(self._handlers.keys()) if lvl_id not in existing_files]
+                for lvl_id in to_remove:
+                    self._handlers.pop(lvl_id, None)
+                    print(f"[LevelManager] Pruned deleted level '{lvl_id}' from memory.")
+                    if self._active_level_id == lvl_id:
+                        remaining = [k for k in self._handlers.keys() if k != lvl_id]
+                        if remaining:
+                            print(f"[LevelManager] Active level '{lvl_id}' was deleted; falling back to '{remaining[0]}'")
+                            self.navigate_to(remaining[0])
+
+                # 2. Discover newly added levels
+                if any(f not in self._handlers for f in existing_files):
+                    self._auto_discover_levels()
+        except Exception:
+            pass
+
+        return {lvl_id: handler.display_name for lvl_id, handler in self._handlers.items()}
+
     def get_registered_levels(self) -> Dict[str, str]:
         """Returns {level_id: display_name} of all registered levels."""
-        return {lvl_id: handler.display_name for lvl_id, handler in self._handlers.items()}
+        return self.sync_levels()
 
     def navigate_to(self, target_level_id: str, item_id: Optional[str] = None, **extra_data) -> bool:
         """Requests level transition. Executes synchronously or schedules async stage switch."""
