@@ -150,6 +150,8 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         print(f"  [+] Created root .gitignore with '{pattern}'")
 
     root_add_bat = ws / "add.bat"
+    root_delete_bat = ws / "delete.bat"
+    root_delete_level_bat = ws / "delete_level.bat"
     root_list_bat = ws / "list_levels.bat"
     root_init_bat = ws / "init_framework.bat"
     root_update_bat = ws / "update_framework.bat"
@@ -200,6 +202,24 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         ")\r\n"
         "endlocal\r\n"
     )
+    delete_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "set SCRIPT_DIR=%~dp0\r\n"
+        'if "%~1"=="" (\r\n'
+        "    echo [ERROR] Harap tentukan nama level yang ingin dihapus!\r\n"
+        "    echo Contoh penggunaan:\r\n"
+        "    echo   .\\delete.bat level_02_room\r\n"
+        "    echo   .\\delete.bat level_2_chiller [nama_ekstensi]\r\n"
+        "    exit /b 1\r\n"
+        ")\r\n"
+        f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
+        f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" delete %*\r\n'
+        ") else (\r\n"
+        '    python "%SCRIPT_DIR%tools\\dev_tools.py" delete %*\r\n'
+        ")\r\n"
+        "endlocal\r\n"
+    )
     list_cmd = (
         "@echo off\r\n"
         "setlocal\r\n"
@@ -241,6 +261,22 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" add "$@"\n'
         "else\n"
         '    python "$SCRIPT_DIR/tools/dev_tools.py" add "$@"\n'
+        "fi\n"
+    )
+    delete_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"\n'
+        'if [ -z "$1" ]; then\n'
+        '    echo "[ERROR] Harap tentukan nama level yang ingin dihapus!"\n'
+        '    echo "Contoh penggunaan:"\n'
+        '    echo "  ./delete.sh level_02_room"\n'
+        '    echo "  ./delete.sh level_2_chiller [nama_ekstensi]"\n'
+        '    exit 1\n'
+        'fi\n'
+        f'if [ -f "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" ]; then\n'
+        f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" delete "$@"\n'
+        "else\n"
+        '    python "$SCRIPT_DIR/tools/dev_tools.py" delete "$@"\n'
         "fi\n"
     )
     list_sh_cmd = (
@@ -285,6 +321,8 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     root_init_sh = ws / "init_framework.sh"
     root_update_sh = ws / "update_framework.sh"
     root_add_sh = ws / "add.sh"
+    root_delete_sh = ws / "delete.sh"
+    root_delete_level_sh = ws / "delete_level.sh"
     root_list_sh = ws / "list_levels.sh"
     root_launch_bat = ws / "launch_web_view.bat"
     root_launch_sh = ws / "launch_web_view.sh"
@@ -299,6 +337,12 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_add_bat.exists():
         root_add_bat.write_text(add_cmd, encoding="utf-8")
         created_shortcuts.append("add.bat")
+    if not root_delete_bat.exists():
+        root_delete_bat.write_text(delete_cmd, encoding="utf-8")
+        created_shortcuts.append("delete.bat")
+    if not root_delete_level_bat.exists():
+        root_delete_level_bat.write_text(delete_cmd, encoding="utf-8")
+        created_shortcuts.append("delete_level.bat")
     if not root_list_bat.exists():
         root_list_bat.write_text(list_cmd, encoding="utf-8")
         created_shortcuts.append("list_levels.bat")
@@ -315,6 +359,12 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_add_sh.exists():
         root_add_sh.write_text(add_sh_cmd, encoding="utf-8")
         created_shortcuts.append("add.sh")
+    if not root_delete_sh.exists():
+        root_delete_sh.write_text(delete_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("delete.sh")
+    if not root_delete_level_sh.exists():
+        root_delete_level_sh.write_text(delete_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("delete_level.sh")
     if not root_list_sh.exists():
         root_list_sh.write_text(list_sh_cmd, encoding="utf-8")
         created_shortcuts.append("list_levels.sh")
@@ -573,7 +623,8 @@ def cmd_init(args):
     print("  2. Buka Omniverse Editor:      .\\repo.bat launch")
     print("  3. Stream ke Web Dashboard:    .\\launch_web_view.bat")
     print("  4. Tambah level baru:          .\\add.bat level_03_detail")
-    print("  5. Cek seluruh level:          .\\list_levels.bat")
+    print("  5. Hapus level:                .\\delete.bat level_03_detail")
+    print("  6. Cek seluruh level:          .\\list_levels.bat")
     print("=" * 70)
     return 0
 
@@ -623,8 +674,93 @@ def cmd_add(args):
     print("Tips Penggunaan:")
     print(f"  - Buka {target_file} untuk menyesuaikan logic on_enter() dan on_exit()")
     print(f"  - Daftarkan navigasi: self.request_navigate('{clean_id}') dari level lain")
+    print(f"  - Hapus level ini jika tidak diperlukan: .\\delete.bat {clean_id}")
     print("=" * 70)
     return 0
+
+
+def cmd_delete(args):
+    """Deletes an existing level file after interactive confirmation."""
+    ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension)
+    levels_dir = pkg_dir / "levels"
+
+    if not levels_dir.is_dir():
+        print(f"[ERROR] Direktori levels belum ada di '{ext_name}'.")
+        return 1
+
+    raw_name = args.name.strip().lower()
+    if raw_name.endswith(".py"):
+        raw_name = raw_name[:-3]
+
+    candidates = [raw_name]
+    if not raw_name.startswith("level_"):
+        candidates.append(f"level_{raw_name}")
+
+    target_file = None
+    target_id = None
+    for cand in candidates:
+        clean_cand = re.sub(r"[^a-zA-Z0-9_]", "_", cand)
+        f_path = levels_dir / f"{clean_cand}.py"
+        if f_path.is_file():
+            target_file = f_path
+            target_id = clean_cand
+            break
+
+    if not target_file:
+        print(f"[ERROR] File level '{args.name}' tidak ditemukan di: {levels_dir}")
+        available = [
+            f.name for f in sorted(levels_dir.glob("level_*.py"))
+            if f.is_file() and f.name != "__init__.py"
+        ]
+        if available:
+            print("\nDaftar level yang tersedia saat ini:")
+            for idx, lvl in enumerate(available, 1):
+                print(f"  {idx}. {lvl}")
+            print("\nContoh:")
+            print(f"  .\\delete.bat {available[0][:-3]}")
+        return 1
+
+    # Safety confirmation prompt
+    print("=" * 70)
+    print("  KONFIRMASI PENGHAPUSAN LEVEL")
+    print("=" * 70)
+    print(f"  Target Ekstensi : {ext_name}")
+    print(f"  Level ID        : {target_id}")
+    print(f"  Lokasi File     : {target_file}")
+    print("=" * 70)
+    print("  [PERINGATAN] File level ini akan dihapus secara permanen dari proyek.")
+
+    if not getattr(args, "yes", False):
+        try:
+            confirm = input(f"\nApakah Anda benar-benar yakin ingin menghapus level '{target_id}'? (y/N): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperasi dibatalkan.")
+            return 1
+
+        if confirm not in ["y", "yes"]:
+            print(f"\n[INFO] Operasi dibatalkan. Level '{target_id}' TIDAK dihapus.")
+            return 0
+
+    try:
+        target_file.unlink()
+        print(f"\n  [+] File berhasil dihapus: {target_file.name}")
+
+        # Clean pycache if present
+        pycache_dir = levels_dir / "__pycache__"
+        if pycache_dir.is_dir():
+            for pyc in pycache_dir.glob(f"{target_id}*.pyc"):
+                try:
+                    pyc.unlink()
+                except Exception:
+                    pass
+
+        print("=" * 70)
+        print(f"[SUCCESS] Level '{target_id}' berhasil dihapus dari ekstensi '{ext_name}'!")
+        print("=" * 70)
+        return 0
+    except Exception as e:
+        print(f"[ERROR] Gagal menghapus file level: {e}")
+        return 1
 
 
 def cmd_list(args):
@@ -754,6 +890,16 @@ def main():
     add_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
     add_parser.add_argument("--force", action="store_true", help="Paksa timpa jika file sudah ada")
 
+    # Command: delete
+    delete_parser = subparsers.add_parser(
+        "delete",
+        aliases=["del", "rm", "remove"],
+        help="Hapus file level dari proyek dengan konfirmasi"
+    )
+    delete_parser.add_argument("name", help="Nama level yang ingin dihapus (contoh: level_02_room atau 02)")
+    delete_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
+    delete_parser.add_argument("-y", "--yes", action="store_true", help="Langsung hapus tanpa meminta konfirmasi manual")
+
     # Command: list
     list_parser = subparsers.add_parser("list", help="Tampilkan daftar level yang terdaftar")
     list_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
@@ -771,6 +917,8 @@ def main():
         sys.exit(cmd_update(parsed))
     elif parsed.command == "add":
         sys.exit(cmd_add(parsed))
+    elif parsed.command in ["delete", "del", "rm", "remove"]:
+        sys.exit(cmd_delete(parsed))
     elif parsed.command == "list":
         sys.exit(cmd_list(parsed))
     elif parsed.command == "webview":
