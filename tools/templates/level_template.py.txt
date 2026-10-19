@@ -49,11 +49,16 @@ class {class_name}(BaseLevelHandler):
         print(f"[{self.level_id}] Entered. Previous level: {context.previous_level}")
 
         # =========================================================================
-        # HELPER 1: CAMERA HELPER EXAMPLES
+        # HELPER 1: CAMERA HELPER (LOCKED TO 0,0,0)
         # =========================================================================
-        # Preset views: 'iso' (Isometric), 'front', 'back', 'left', 'right', 'top', 'bottom'
+        if hasattr(self, "camera_helper") and self.camera_helper:
+            self.camera_helper._disable_cursor_tumble()
+
         self.bind_viewport_camera(stage)
-        self.set_camera_view(stage, "iso", distance=1000.0, smooth=False)
+        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=1000.0, view="iso", smooth=False)
+
+        # Preset views: 'iso' (Isometric), 'front', 'back', 'left', 'right', 'top', 'bottom'
+        # self.set_camera_view(stage, "iso", distance=1000.0, smooth=False)
 
         # Custom camera pivot target and distance:
         # self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=1200.0, smooth=True)
