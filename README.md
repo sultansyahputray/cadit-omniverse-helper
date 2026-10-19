@@ -703,6 +703,8 @@ Scans the extension and displays all registered handlers:
 Pulls latest engine features (USD center-of-interest pivot locking, stationary selection, viewport camera binding) into existing extensions without overwriting custom levels:
 ```bash
 .\update_framework.bat
+# Or directly from inside helper directory:
+.\cadit-omniverse-helper\update_framework.bat
 # Or in Linux / macOS:
 ./update_framework.sh
 ```
