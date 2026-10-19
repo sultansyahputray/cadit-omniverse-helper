@@ -83,7 +83,8 @@ class CameraHelper:
                 pass
         try:
             import omni.kit.commands
-            omni.kit.commands.execute("SetViewportCamera", camera_path=target_path)
+            if hasattr(omni.kit.commands, "get_command") and omni.kit.commands.get_command("SetViewportCamera"):
+                omni.kit.commands.execute("SetViewportCamera", camera_path=target_path)
         except Exception:
             pass
 
@@ -269,7 +270,8 @@ class CameraHelper:
 
         try:
             import omni.kit.commands
-            omni.kit.commands.execute("SetViewportCamera", camera_path=target_cam_path)
+            if hasattr(omni.kit.commands, "get_command") and omni.kit.commands.get_command("SetViewportCamera"):
+                omni.kit.commands.execute("SetViewportCamera", camera_path=target_cam_path)
         except Exception:
             pass
 
