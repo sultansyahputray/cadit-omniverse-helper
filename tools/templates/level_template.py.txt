@@ -33,11 +33,9 @@ class {class_name}(BaseLevelHandler):
     accent_color = "#00FFCC"
 
     # 3. Object Selection and Click Zoom Configuration:
-    # - zoom_on_click = True  : Automatically fits the camera to the clicked object's bounding box.
-    # - zoom_on_click = False : Keeps current camera distance, only locking the orbit pivot to the object.
-    # - click_zoom_distance = 500.0 : Zooms to an exact fixed distance (in scene units) when set to a number.
-    zoom_on_click = True
-    click_zoom_distance = None
+    # - click_zoom_distance = 0.0   : Kamera DIAM di tempat (tanpa zoom), hanya orbit pivot pindah ke objek.
+    # - click_zoom_distance = 500.0 : Fokus & smooth zoom ke objek dengan jarak 500 unit (atau nilai apa pun > 0).
+    click_zoom_distance = 0.0
 
     def __init__(self, manager):
         super().__init__(manager)
@@ -54,7 +52,8 @@ class {class_name}(BaseLevelHandler):
         # HELPER 1: CAMERA HELPER EXAMPLES
         # =========================================================================
         # Preset views: 'iso' (Isometric), 'front', 'back', 'left', 'right', 'top', 'bottom'
-        self.set_camera_view(stage, "iso", distance=1000.0, smooth=True)
+        self.bind_viewport_camera(stage)
+        self.set_camera_view(stage, "iso", distance=1000.0, smooth=False)
 
         # Custom camera pivot target and distance:
         # self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=1200.0, smooth=True)

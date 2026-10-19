@@ -35,6 +35,7 @@ class CameraHelper:
     """Orbit Pivot, ViewCube Presets, Zoom Navigation, and Smooth Glide Engine."""
 
     def __init__(self, enable_smooth_glide: bool = True, default_glide_duration: float = 1.0):
+        self.camera_path: str = "/OmniverseKit_Persp"
         self._current_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
         self._current_distance: float = 1000.0
         self._current_view_direction: Gf.Vec3d = VIEWCUBE_DIRECTIONS["iso"]
@@ -52,31 +53,72 @@ class CameraHelper:
         self._glide_target_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
         self._glide_target_distance: float = 1000.0
 
+        # Default overview tracking for clean selection & unselection resets
+        self._default_pivot: Gf.Vec3d = Gf.Vec3d(0.0, 0.0, 0.0)
+        self._default_distance: float = 1000.0
+        self._was_zoomed: bool = False
+        self._pre_zoom_dist: Optional[float] = None
+
         self._disable_cursor_tumble()
 
+    def set_camera_path(self, cam_path: str) -> None:
+        """Sets the dedicated camera prim path for this level (e.g. /OmniverseKit_level_01_Cam)."""
+        if cam_path:
+            self.camera_path = str(cam_path)
+
+    def bind_viewport_camera(self, stage: Usd.Stage, cam_path: Optional[str] = None) -> None:
+        """
+        Cleanly binds the active viewport to this camera prim, flushing stale manipulator state.
+        Matches the proven complete-data-centre technique (HallService / RegionService).
+        """
+        target_path = cam_path or self.camera_path or "/OmniverseKit_Persp"
+        if vp_utils:
+            try:
+                v_api = vp_utils.get_active_viewport()
+                if v_api:
+                    if str(v_api.camera_path) == str(target_path):
+                        v_api.camera_path = "/OmniverseKit_Persp"
+                    v_api.camera_path = target_path
+            except Exception:
+                pass
+        try:
+            import omni.kit.commands
+            omni.kit.commands.execute("SetViewportCamera", camera_path=target_path)
+        except Exception:
+            pass
+
     def _disable_cursor_tumble(self) -> None:
-        """Disables erratic Kit tumble-at-cursor behavior to maintain stable orbit pivots."""
+        """
+        Disables automatic Kit orbit-framing-on-click so custom pivot locks operate cleanly.
+        Matches complete-data-centre exactly, cleaning up any corrupted persistent settings.
+        """
         if carb:
             try:
                 settings = carb.settings.get_settings()
                 if settings:
-                    settings.set("/app/viewport/camera/tumbleAtCursor", False)
-                    settings.set("/persistent/app/viewport/camera/tumbleAtCursor", False)
-                    settings.set("/app/viewport/manipulator/camera/tumbleAtCursor", False)
-                    settings.set("/persistent/app/viewport/manipulator/camera/tumbleAtCursor", False)
-                    settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
-                    settings.set("/exts/omni.kit.manipulator.camera/objectCentric/type", 0)
-                    settings.set("/persistent/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
-                    settings.set("/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane", False)
                     settings.set("/exts/omni.kit.viewport.navigation.camera_manipulator/orbitAutoFrameSelected", False)
-                    settings.set("/persistent/exts/omni.kit.viewport.navigation.camera_manipulator/orbitAutoFrameSelected", False)
-                    settings.set("/app/viewport/autoFrame/mode", "disabled")
-                    settings.set("/persistent/app/viewport/autoFrame/mode", "disabled")
+                    # Clean up any bad keys that might have been persistently written
+                    for key in [
+                        "/app/viewport/autoFrame/mode",
+                        "/persistent/app/viewport/autoFrame/mode",
+                        "/app/viewport/camera/tumbleAtCursor",
+                        "/persistent/app/viewport/camera/tumbleAtCursor",
+                        "/app/viewport/manipulator/camera/tumbleAtCursor",
+                        "/persistent/app/viewport/manipulator/camera/tumbleAtCursor",
+                        "/persistent/exts/omni.kit.manipulator.camera/objectCentric/type",
+                        "/exts/omni.kit.manipulator.camera/objectCentric/type",
+                        "/persistent/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane",
+                        "/exts/omni.kit.manipulator.camera/objectCentric/useGroundPlane",
+                    ]:
+                        try:
+                            settings.destroy_item(key)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
     def get_active_camera_prim(self, stage: Usd.Stage) -> Optional[Usd.Prim]:
-        """Resolves active viewport camera prim, defining /OmniverseKit_Persp if missing."""
+        """Resolves active viewport camera prim, defining target path if missing."""
         if not stage:
             return None
 
@@ -90,7 +132,7 @@ class CameraHelper:
                 pass
 
         if not cam_path:
-            cam_path = "/OmniverseKit_Persp"
+            cam_path = self.camera_path or "/OmniverseKit_Persp"
 
         prim = stage.GetPrimAtPath(cam_path)
         if not prim or not prim.IsValid():
@@ -102,47 +144,48 @@ class CameraHelper:
     def _configure_camera_prim(self, p: Usd.Prim, cam_mat: Gf.Matrix4d, dist: float, focal_length: float = 20.0) -> None:
         """
         Configures transform, perspective attributes, centerOfInterest, and unlocks camera.
-        Explicitly clears conflicting individual translate/rotate ops to ensure transform op takes precedence.
+        Strictly follows complete-data-centre pattern to ensure Kit manipulator operates stably.
         """
         try:
             xformable = UsdGeom.Xformable(p)
-            trans_attr = p.GetAttribute("xformOp:transform")
-            order_attr = xformable.GetXformOpOrderAttr()
-            cur_order = list(order_attr.Get()) if order_attr and order_attr.IsValid() and order_attr.Get() else []
-
-            if not trans_attr or not trans_attr.IsValid():
-                for op_name in cur_order:
-                    attr = p.GetAttribute(op_name)
+            xform_op = None
+            for op in xformable.GetOrderedXformOps():
+                if op.GetOpType() == UsdGeom.XformOp.TypeTransform:
+                    xform_op = op
+                    break
+            if not xform_op:
+                try:
+                    xform_op = xformable.AddTransformOp()
+                except Exception:
+                    attr = p.GetAttribute("xformOp:transform")
                     if attr and attr.IsValid():
-                        attr.Clear()
-                trans_op = xformable.AddTransformOp(opSuffix="")
-                trans_op.Set(cam_mat)
-            else:
-                trans_attr.Set(cam_mat)
-                if "xformOp:transform" not in cur_order:
-                    for op_name in cur_order:
-                        attr = p.GetAttribute(op_name)
-                        if attr and attr.IsValid():
-                            attr.Clear()
-                    xformable.SetXformOpOrder([UsdGeom.XformOp(trans_attr)])
+                        xform_op = UsdGeom.XformOp(attr)
+            if xform_op:
+                xform_op.Set(cam_mat)
 
-            # Configure lens attributes
-            for attr_name, val_type, val in [
-                ("projection", Sdf.ValueTypeNames.Token, "perspective"),
-                ("focalLength", Sdf.ValueTypeNames.Float, float(focal_length)),
-                ("focusDistance", Sdf.ValueTypeNames.Float, float(dist)),
-                ("clippingRange", Sdf.ValueTypeNames.Float2, Gf.Vec2f(1.0, 10000000.0)),
-                ("centerOfInterest", Sdf.ValueTypeNames.Float, float(dist)),
-                ("camera:lock", Sdf.ValueTypeNames.Bool, False),
-                ("omni:kit:camera:lock", Sdf.ValueTypeNames.Bool, False),
-            ]:
-                attr = p.GetAttribute(attr_name)
-                if not attr or not attr.IsValid():
-                    attr = p.CreateAttribute(attr_name, val_type)
-                attr.Set(val)
+            cam_api = UsdGeom.Camera(p)
+            cam_api.CreateProjectionAttr().Set(UsdGeom.Tokens.perspective)
+            cam_api.CreateFocalLengthAttr().Set(float(focal_length))
+            cam_api.CreateFocusDistanceAttr().Set(float(dist))
+            cam_api.CreateClippingRangeAttr().Set(Gf.Vec2f(1.0, 1000000.0))
+
+            # CRITICAL: In Omniverse Kit, orbit pivot, pan speed, and zoom scale are governed by
+            # omni:kit:centerOfInterest of type Vector3d(0, 0, -dist) in camera local space!
+            coi_attr = p.GetAttribute("omni:kit:centerOfInterest")
+            if not coi_attr or not coi_attr.IsValid():
+                coi_attr = p.CreateAttribute(
+                    "omni:kit:centerOfInterest", Sdf.ValueTypeNames.Vector3d, True, Sdf.VariabilityUniform
+                )
+            coi_attr.Set(Gf.Vec3d(0, 0, -float(dist)))
+
+            # Unlock camera prim so user can orbit & pan freely
+            for lock_name in ["camera:omni:kit:cameraLock", "omni:kit:cameraLock"]:
+                l_attr = p.GetAttribute(lock_name)
+                if l_attr and l_attr.IsValid():
+                    l_attr.Set(False)
 
         except Exception as e:
-            print(f"[CameraHelper] Note during camera prim configuration: {e}")
+            print(f"[CameraHelper] Note during camera prim configuration {p.GetPath()}: {e}")
 
     def _apply_pose(
         self,
@@ -151,11 +194,16 @@ class CameraHelper:
         look_at: Gf.Vec3d,
         distance: float,
         focal_length: float = 20.0,
-        cam_path: str = "/OmniverseKit_Persp"
+        cam_path: Optional[str] = None
     ) -> None:
-        """Computes lookAt matrix and updates camera prim in SessionLayer and RootLayer."""
+        """
+        Computes lookAt matrix and updates camera prim in SessionLayer and RootLayer.
+        Dispatches TransformPrimCommand and binds active viewport cleanly.
+        """
         if not stage:
             return
+
+        target_cam_path = cam_path or self.camera_path or "/OmniverseKit_Persp"
 
         forward = (look_at - cam_pos).GetNormalized()
         up_candidate = Gf.Vec3d(0.0, 1.0, 0.0)
@@ -168,37 +216,68 @@ class CameraHelper:
         cam_mat.SetLookAt(cam_pos, look_at, up_candidate)
         cam_mat = cam_mat.GetInverse()
 
+        cams_to_update = [target_cam_path]
+        if target_cam_path != "/OmniverseKit_Persp":
+            cams_to_update.append("/OmniverseKit_Persp")
+
+        # 1. Update on SessionLayer (CRITICAL: overrides viewport interactive pan/zoom opinions)
         session_layer = stage.GetSessionLayer()
         if session_layer:
             with Usd.EditContext(stage, Usd.EditTarget(session_layer)):
-                p = stage.GetPrimAtPath(cam_path)
-                if not p or not p.IsValid():
-                    cam = UsdGeom.Camera.Define(stage, cam_path)
-                    p = cam.GetPrim()
-                if p and p.IsValid():
-                    self._configure_camera_prim(p, cam_mat, distance, focal_length)
+                for c_path in cams_to_update:
+                    p = stage.GetPrimAtPath(c_path)
+                    if not p or not p.IsValid():
+                        if c_path != "/OmniverseKit_Persp":
+                            cam = UsdGeom.Camera.Define(stage, c_path)
+                            p = cam.GetPrim()
+                    if p and p.IsValid():
+                        self._configure_camera_prim(p, cam_mat, distance, focal_length)
 
+        # 2. Update on RootLayer
         root_layer = stage.GetRootLayer()
         if root_layer and root_layer != session_layer:
             with Usd.EditContext(stage, Usd.EditTarget(root_layer)):
-                p = stage.GetPrimAtPath(cam_path)
-                if not p or not p.IsValid():
-                    cam = UsdGeom.Camera.Define(stage, cam_path)
-                    p = cam.GetPrim()
-                if p and p.IsValid():
-                    self._configure_camera_prim(p, cam_mat, distance, focal_length)
+                for c_path in cams_to_update:
+                    p = stage.GetPrimAtPath(c_path)
+                    if not p or not p.IsValid():
+                        if c_path != "/OmniverseKit_Persp":
+                            cam = UsdGeom.Camera.Define(stage, c_path)
+                            p = cam.GetPrim()
+                    if p and p.IsValid():
+                        self._configure_camera_prim(p, cam_mat, distance, focal_length)
 
-        # Sync active viewport
+        # 3. Notify Omniverse Kit Viewport Command Dispatcher
+        try:
+            import omni.kit.commands
+            omni.kit.commands.execute(
+                "TransformPrimCommand",
+                path=target_cam_path,
+                new_transform_matrix=cam_mat,
+            )
+        except Exception:
+            pass
+
+        # 4. Switch / sync active viewport to target camera cleanly
         if vp_utils:
             try:
                 v_api = vp_utils.get_active_viewport()
-                if v_api and str(v_api.camera_path) != str(cam_path):
-                    v_api.camera_path = cam_path
+                if v_api:
+                    if str(v_api.camera_path) != str(target_cam_path):
+                        v_api.camera_path = target_cam_path
             except Exception:
                 pass
 
+        try:
+            import omni.kit.commands
+            omni.kit.commands.execute("SetViewportCamera", camera_path=target_cam_path)
+        except Exception:
+            pass
+
         self._current_distance = distance
         self._current_pivot = look_at
+        vec = cam_pos - look_at
+        if vec.GetLength() > 1.0:
+            self._current_view_direction = vec.GetNormalized()
 
     def _start_glide(
         self,
@@ -323,6 +402,11 @@ class CameraHelper:
         target_dist = max(1.0, float(distance))
         target_cam_pos = target_pivot + (self._current_view_direction * target_dist)
 
+        # Record default level overview pivot and distance
+        self._default_pivot = target_pivot
+        self._default_distance = target_dist
+        self._was_zoomed = False
+
         use_smooth = self.enable_smooth_glide if smooth is None else smooth
         if use_smooth:
             self._start_glide(stage, target_cam_pos, target_pivot, target_dist, duration=duration)
@@ -334,13 +418,19 @@ class CameraHelper:
         self,
         stage: Usd.Stage,
         prim_path: str,
+        zoom_distance: Optional[float] = None,
         distance: Optional[float] = None,
-        zoom: bool = True,
+        zoom: Optional[bool] = None,
         smooth: Optional[bool] = None,
         duration: Optional[float] = None
     ) -> bool:
         """
         Moves orbit pivot to the geometric center (midpoint) of the target object's bounding box.
+        - If zoom_distance <= 0 (or zoom is False):
+          Camera stays stationary (cam_pos does NOT translate/zoom).
+          Only orbit pivot and centerOfInterest are updated to the object.
+        - If zoom_distance > 0:
+          Smooth glides camera to the specified zoom distance focusing on the object.
         """
         if not stage or not prim_path:
             return False
@@ -355,36 +445,121 @@ class CameraHelper:
         ])
         bound = bbox_cache.ComputeWorldBound(prim)
         rng = bound.ComputeAlignedRange()
-        if rng.IsEmpty():
-            print(f"[CameraHelper] Bounding box is empty for '{prim_path}'")
-            return False
-
-        mid = rng.GetMidpoint()
-        size = (rng.GetMax() - rng.GetMin()).GetLength()
-
-        _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
-        self._current_view_direction = cur_dir
-
-        if not zoom:
-            target_dist = cur_dist
-        elif distance is not None:
-            target_dist = max(10.0, float(distance))
+        if not rng.IsEmpty():
+            mid = rng.GetMidpoint()
         else:
-            target_dist = max(100.0, size * 1.5)
+            try:
+                xformable = UsdGeom.Xformable(prim)
+                mid = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+            except Exception:
+                print(f"[CameraHelper] Bounding box is empty for '{prim_path}'")
+                return False
 
-        self.set_camera_pivot(stage, pivot_point=mid, distance=target_dist, smooth=smooth, duration=duration)
-        return True
+        cam_pos, cur_dist, cur_dir = self.get_current_camera_pose(stage)
+
+        # Resolve effective zoom distance:
+        # Priority: zoom_distance argument, then distance if zoom is True/None
+        effective_zoom_dist = 0.0
+        if zoom_distance is not None:
+            effective_zoom_dist = float(zoom_distance)
+        elif zoom is False:
+            effective_zoom_dist = 0.0
+        elif distance is not None:
+            effective_zoom_dist = float(distance)
+        elif zoom is True:
+            size = (rng.GetMax() - rng.GetMin()).GetLength() if not rng.IsEmpty() else 100.0
+            effective_zoom_dist = max(100.0, size * 1.5)
+
+        if effective_zoom_dist <= 0.0:
+            # 🎯 MODE 1: ZOOM = 0 -> KAMERA DIAM (TANPA ZOOMING)
+            # Posisi kamera (cam_pos) tidak berubah sama sekali!
+            self._was_zoomed = False
+            self._is_gliding = False
+
+            vec_to_cam = cam_pos - mid
+            actual_dist = max(1.0, vec_to_cam.GetLength())
+            self._current_pivot = mid
+            self._current_distance = actual_dist
+            self._current_view_direction = vec_to_cam.GetNormalized()
+
+            # Terapkan pose: cam_pos tetap di tempatnya, arahkan look_at ke objek, centerOfInterest = actual_dist
+            self._apply_pose(stage, cam_pos=cam_pos, look_at=mid, distance=actual_dist)
+            print(f"[CameraHelper] Pivot locked to '{prim_path}' at {mid} (Stationary, distance={actual_dist:.1f})")
+            return True
+        else:
+            # 🎯 MODE 2: ZOOM > 0 -> FOKUS & SMOOTH ZOOM
+            if not self._was_zoomed:
+                self._pre_zoom_dist = cur_dist
+
+            self._was_zoomed = True
+            target_dist = max(10.0, effective_zoom_dist)
+
+            vec_to_cam = cam_pos - mid
+            view_dir = vec_to_cam.GetNormalized() if vec_to_cam.GetLength() > 1.0 else cur_dir
+            target_cam_pos = mid + (view_dir * target_dist)
+
+            use_smooth = self.enable_smooth_glide if smooth is None else smooth
+            if use_smooth:
+                self._start_glide(stage, target_cam_pos, mid, target_dist, duration=duration)
+            else:
+                self._is_gliding = False
+                self._apply_pose(stage, target_cam_pos, mid, target_dist)
+
+            print(f"[CameraHelper] Zooming to '{prim_path}' at distance {target_dist:.1f} (Pivot: {mid})")
+            return True
 
     def reset_camera_pivot(
         self,
         stage: Usd.Stage,
+        distance: Optional[float] = None,
         smooth: Optional[bool] = None,
         duration: Optional[float] = None
     ) -> None:
-        """Resets camera pivot back to the global origin (0, 0, 0)."""
-        _, cur_dist, cur_dir = self.get_current_camera_pose(stage)
-        self._current_view_direction = cur_dir
-        self.set_camera_pivot(stage, pivot_point=(0.0, 0.0, 0.0), distance=cur_dist, smooth=smooth, duration=duration)
+        """
+        Resets orbit pivot back to default level origin (0, 0, 0).
+        - If previous selection was stationary (zoom == 0):
+          Camera stays stationary at current position, only pivot & centerOfInterest return to origin.
+        - If previous selection had zoom > 0:
+          Smooth glides back to original overview distance at origin.
+        """
+        if not stage:
+            return
+
+        cam_pos, cur_dist, cur_dir = self.get_current_camera_pose(stage)
+        target_pivot = self._default_pivot
+
+        if not self._was_zoomed and distance is None:
+            # 🎯 KONDISI 1: Tadi zoom == 0 -> KAMERA TETAP DIAM
+            # Tidak berpindah koordinat, hanya pivot kembali ke origin
+            vec_to_cam = cam_pos - target_pivot
+            actual_dist = max(1.0, vec_to_cam.GetLength())
+
+            self._is_gliding = False
+            self._current_pivot = target_pivot
+            self._current_distance = actual_dist
+            self._current_view_direction = vec_to_cam.GetNormalized()
+
+            self._apply_pose(stage, cam_pos=cam_pos, look_at=target_pivot, distance=actual_dist)
+            print(f"[CameraHelper] Reset pivot to {target_pivot} (Stationary, distance={actual_dist:.1f})")
+        else:
+            # 🎯 KONDISI 2: Tadi zoom > 0 -> KEMBALI KE OVERVIEW
+            target_dist = float(distance) if distance is not None else (self._pre_zoom_dist or self._default_distance or 1000.0)
+            target_dist = max(10.0, target_dist)
+
+            vec_to_cam = cam_pos - target_pivot
+            view_dir = vec_to_cam.GetNormalized() if vec_to_cam.GetLength() > 1.0 else cur_dir
+            target_cam_pos = target_pivot + (view_dir * target_dist)
+
+            use_smooth = self.enable_smooth_glide if smooth is None else smooth
+            if use_smooth:
+                self._start_glide(stage, target_cam_pos, target_pivot, target_dist, duration=duration)
+            else:
+                self._is_gliding = False
+                self._apply_pose(stage, target_cam_pos, target_pivot, target_dist)
+
+            self._was_zoomed = False
+            self._pre_zoom_dist = None
+            print(f"[CameraHelper] Smooth reset to overview distance {target_dist:.1f} (Pivot: {target_pivot})")
 
     def set_camera_view(
         self,
@@ -404,6 +579,8 @@ class CameraHelper:
 
         if distance is not None:
             self._current_distance = max(1.0, float(distance))
+            self._default_distance = self._current_distance
+        self._was_zoomed = False
 
         self._current_view_direction = VIEWCUBE_DIRECTIONS[key]
         target_cam_pos = self._current_pivot + (self._current_view_direction * self._current_distance)

@@ -34,12 +34,23 @@ class BaseLevelHandler(ABC):
     # [OPTIONAL] Prims tracked for 2D Web Dashboard projection:
     tracked_objects: Dict[str, str] = {}
 
+    # [OPTIONAL] Object selection click zoom distance:
+    # - 0.0 : Stationary camera (NO zoom, camera stays still, orbit pivot locked to object)
+    # - > 0.0 (e.g. 350.0) : Smooth glide camera to the specified zoom distance
+    click_zoom_distance: float = 0.0
+
     def __init__(self, manager):
         self.manager = manager
         self.visibility_helper = VisibilityHelper()
         self.projection_helper = ProjectionHelper()
         self.color_helper = ColorHelper()
         self.camera_helper = CameraHelper()
+        self.camera_path: str = f"/OmniverseKit_{self.level_id}_Cam"
+        self.camera_helper.set_camera_path(self.camera_path)
+
+    def bind_viewport_camera(self, stage: Usd.Stage) -> None:
+        """Cleanly binds active viewport to this level's camera prim and flushes manipulator state."""
+        self.camera_helper.bind_viewport_camera(stage, self.camera_path)
 
     # --- Delegated Visibility Methods ---
     def hide_objects(self, stage: Usd.Stage, prim_paths: list) -> None:
@@ -166,22 +177,24 @@ class BaseLevelHandler(ABC):
         self,
         stage: Usd.Stage,
         prim_path: str,
+        zoom_distance: Optional[float] = None,
         distance: Optional[float] = None,
-        zoom: bool = True,
+        zoom: Optional[bool] = None,
         smooth: Optional[bool] = None,
         duration: Optional[float] = None
     ) -> bool:
         return self.camera_helper.set_camera_pivot_to_object(
-            stage, prim_path, distance=distance, zoom=zoom, smooth=smooth, duration=duration
+            stage, prim_path, zoom_distance=zoom_distance, distance=distance, zoom=zoom, smooth=smooth, duration=duration
         )
 
     def reset_camera_pivot(
         self,
         stage: Usd.Stage,
+        distance: Optional[float] = None,
         smooth: Optional[bool] = None,
         duration: Optional[float] = None
     ) -> None:
-        self.camera_helper.reset_camera_pivot(stage, smooth=smooth, duration=duration)
+        self.camera_helper.reset_camera_pivot(stage, distance=distance, smooth=smooth, duration=duration)
 
     def set_camera_view(
         self,
@@ -332,6 +345,7 @@ class BaseLevelHandler(ABC):
         self,
         stage: Optional[Usd.Stage],
         prim_path: Optional[str],
+        zoom_distance: Optional[float] = None,
         distance: Optional[float] = None,
         zoom: Optional[bool] = None
     ) -> None:
@@ -341,19 +355,26 @@ class BaseLevelHandler(ABC):
         Args:
             stage: Active USD stage.
             prim_path: Prim path of the single selected object, or None if cleared.
-            distance: Explicit zoom distance if specified (e.g. 500.0).
-            zoom: Set to False to disable zoom completely (preserves current distance).
+            zoom_distance: Zoom distance (0.0 = stationary camera/no zoom, > 0.0 = smooth zoom to distance).
+            distance: Backward-compatible alias for zoom_distance.
+            zoom: If False, forces zoom_distance = 0.0 (stationary).
         """
         if not stage:
             return
         if prim_path:
-            # Determine zoom behavior: argument takes highest precedence, then level class attribute, default True
-            actual_zoom = zoom if zoom is not None else getattr(self, "zoom_on_click", True)
-            actual_dist = distance if distance is not None else getattr(self, "click_zoom_distance", None)
+            # Determine zoom distance priority:
+            if zoom_distance is not None:
+                actual_dist = float(zoom_distance)
+            elif distance is not None:
+                actual_dist = float(distance)
+            elif zoom is False:
+                actual_dist = 0.0
+            else:
+                actual_dist = float(getattr(self, "click_zoom_distance", 0.0))
 
-            self.set_camera_pivot_to_object(stage, prim_path, distance=actual_dist, zoom=actual_zoom)
+            self.set_camera_pivot_to_object(stage, prim_path, zoom_distance=actual_dist)
         else:
-            print(f"[{self.level_id}] Selection cleared -> Resetting orbit pivot to (0, 0, 0)")
+            print(f"[{self.level_id}] Selection cleared -> Resetting orbit pivot")
             self.reset_camera_pivot(stage)
 
     # --- Delegated Metadata & Property Inspection ---

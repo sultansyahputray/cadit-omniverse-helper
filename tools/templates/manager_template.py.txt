@@ -117,6 +117,13 @@ class LevelManager:
                 except Exception as e:
                     print(f"[LevelManager] Error during on_exit for '{self._active_level_id}': {e}")
 
+            # Reset viewport selection automatically across level transitions
+            if hasattr(self, "selection_helper") and self.selection_helper:
+                try:
+                    self.selection_helper.clear_selection()
+                except Exception:
+                    pass
+
             # Update context
             prev_id = self._active_level_id
             self._context.push_history(prev_id)

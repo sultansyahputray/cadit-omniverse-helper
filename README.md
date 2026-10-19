@@ -699,6 +699,14 @@ Scans the extension and displays all registered handlers:
 .\list_levels.bat
 ```
 
+### Updating Core Framework in Existing Projects
+Pulls latest engine features (USD center-of-interest pivot locking, stationary selection, viewport camera binding) into existing extensions without overwriting custom levels:
+```bash
+.\update_framework.bat
+# Or in Linux / macOS:
+./update_framework.sh
+```
+
 ### Launching Dedicated WebRTC Streaming App
 Launches Omniverse Kit using the dedicated Web View streaming profile (`cadit.web_view_only.kit`):
 ```bash

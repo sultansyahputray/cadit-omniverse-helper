@@ -149,10 +149,10 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         gitignore_path.write_text(f"# CADIT Omniverse Helper Toolkit\n{pattern}\n", encoding="utf-8")
         print(f"  [+] Created root .gitignore with '{pattern}'")
 
-    # 2. Export universal root shortcuts
     root_add_bat = ws / "add.bat"
     root_list_bat = ws / "list_levels.bat"
     root_init_bat = ws / "init_framework.bat"
+    root_update_bat = ws / "update_framework.bat"
 
     init_cmd = (
         "@echo off\r\n"
@@ -168,6 +168,17 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" init %*\r\n'
         ") else (\r\n"
         '    python "%SCRIPT_DIR%tools\\dev_tools.py" init %*\r\n'
+        ")\r\n"
+        "endlocal\r\n"
+    )
+    update_cmd = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "set SCRIPT_DIR=%~dp0\r\n"
+        f'if exist "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" (\r\n'
+        f'    python "%SCRIPT_DIR%{subfolder_name}\\tools\\dev_tools.py" update %*\r\n'
+        ") else (\r\n"
+        '    python "%SCRIPT_DIR%tools\\dev_tools.py" update %*\r\n'
         ")\r\n"
         "endlocal\r\n"
     )
@@ -242,6 +253,16 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
         "fi\n"
     )
 
+    update_sh_cmd = (
+        "#!/usr/bin/env bash\n"
+        'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"\n'
+        f'if [ -f "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" ]; then\n'
+        f'    python "$SCRIPT_DIR/{subfolder_name}/tools/dev_tools.py" update "$@"\n'
+        "else\n"
+        '    python "$SCRIPT_DIR/tools/dev_tools.py" update "$@"\n'
+        "fi\n"
+    )
+
     launch_cmd = (
         "@echo off\r\n"
         "setlocal\r\n"
@@ -262,6 +283,7 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     )
 
     root_init_sh = ws / "init_framework.sh"
+    root_update_sh = ws / "update_framework.sh"
     root_add_sh = ws / "add.sh"
     root_list_sh = ws / "list_levels.sh"
     root_launch_bat = ws / "launch_web_view.bat"
@@ -271,6 +293,9 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_init_bat.exists():
         root_init_bat.write_text(init_cmd, encoding="utf-8")
         created_shortcuts.append("init_framework.bat")
+    if not root_update_bat.exists():
+        root_update_bat.write_text(update_cmd, encoding="utf-8")
+        created_shortcuts.append("update_framework.bat")
     if not root_add_bat.exists():
         root_add_bat.write_text(add_cmd, encoding="utf-8")
         created_shortcuts.append("add.bat")
@@ -284,6 +309,9 @@ def ensure_root_integration(ws: Path, helper_dir: Path) -> None:
     if not root_init_sh.exists():
         root_init_sh.write_text(init_sh_cmd, encoding="utf-8")
         created_shortcuts.append("init_framework.sh")
+    if not root_update_sh.exists():
+        root_update_sh.write_text(update_sh_cmd, encoding="utf-8")
+        created_shortcuts.append("update_framework.sh")
     if not root_add_sh.exists():
         root_add_sh.write_text(add_sh_cmd, encoding="utf-8")
         created_shortcuts.append("add.sh")
@@ -655,6 +683,58 @@ def cmd_webview(args):
     return 0
 
 
+def cmd_update(args):
+    """Updates core architecture and helpers in an existing extension from the latest templates."""
+    ws = get_workspace_root()
+    helper_dir = Path(__file__).resolve().parent.parent
+
+    # Require explicit extension name if multiple exist or resolve single detected
+    ext_name, ext_root, pkg_dir = resolve_extension_paths(args.extension)
+    core_dir = pkg_dir / "core"
+    helpers_dir = core_dir / "helpers"
+
+    print("=" * 70)
+    print("  OMNIVERSE MODULAR FRAMEWORK - UPDATE CORE & HELPERS")
+    print("=" * 70)
+    print(f"[WORKSPACE] Root: {ws}")
+    print(f"[TARGET]    Ekstensi target: '{ext_name}'")
+    print(f"[PATH]      Package path: {pkg_dir}")
+
+    if not core_dir.exists():
+        print(f"[ERROR] Ekstensi '{ext_name}' belum diinisialisasi! Jalankan init terlebih dahulu.")
+        return 1
+
+    # Ensure root shortcuts (including update_framework.bat) are present
+    ensure_root_integration(ws, helper_dir)
+
+    # Core files to update (NOTE: files in levels/ are intentionally NEVER overwritten)
+    updates = [
+        (core_dir / "context.py", "context_template.py.txt"),
+        (helpers_dir / "visibility_helper.py", "visibility_helper_template.py.txt"),
+        (helpers_dir / "projection_helper.py", "projection_helper_template.py.txt"),
+        (helpers_dir / "color_helper.py", "color_helper_template.py.txt"),
+        (helpers_dir / "camera_helper.py", "camera_helper_template.py.txt"),
+        (helpers_dir / "selection_helper.py", "selection_helper_template.py.txt"),
+        (helpers_dir / "telemetry_helper.py", "telemetry_helper_template.py.txt"),
+        (core_dir / "base_level.py", "base_level_template.py.txt"),
+        (core_dir / "manager.py", "manager_template.py.txt"),
+    ]
+
+    for dest, tpl_name in updates:
+        try:
+            content = read_template(tpl_name)
+            dest.write_text(content, encoding="utf-8")
+            print(f"  [+] Updated: {dest.relative_to(pkg_dir)}")
+        except Exception as e:
+            print(f"  [!] Gagal update {dest.name}: {e}")
+
+    print("-" * 70)
+    print("[SUCCESS] Core architecture & helpers berhasil diperbarui ke versi terbaru!")
+    print("[INFO]    Seluruh level di folder 'levels/' tetap AMAN dan tidak disentuh.")
+    print("=" * 70)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Omniverse Modular Extension Scaffolding Engine")
     subparsers = parser.add_subparsers(dest="command", help="Perintah yang tersedia")
@@ -663,6 +743,10 @@ def main():
     init_parser = subparsers.add_parser("init", help="Inisialisasi core architecture & helpers")
     init_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (contoh: company.my_ext)")
     init_parser.add_argument("--force", action="store_true", help="Paksa tulis ulang meskipun sudah ada")
+
+    # Command: update
+    update_parser = subparsers.add_parser("update", help="Perbarui core architecture & helpers ke versi terbaru")
+    update_parser.add_argument("extension", nargs="?", default=None, help="Nama ekstensi target (opsional)")
 
     # Command: add
     add_parser = subparsers.add_parser("add", help="Tambah level baru")
@@ -683,6 +767,8 @@ def main():
 
     if parsed.command == "init":
         sys.exit(cmd_init(parsed))
+    elif parsed.command == "update":
+        sys.exit(cmd_update(parsed))
     elif parsed.command == "add":
         sys.exit(cmd_add(parsed))
     elif parsed.command == "list":
